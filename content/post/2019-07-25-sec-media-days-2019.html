@@ -1,0 +1,150 @@
+---
+title: SEC Media Days 2019
+author: Scott Frechette
+date: '2019-07-25'
+categories:
+  - R
+tags:
+  - football
+slug: sec-media-days-2019
+---
+
+
+
+<p>I wanted to start a blog to document my NLP journey, and as a resident of Alabama I could think of no better place to start than analyzing SEC Media Days. Every year the highest paid public officials from every state in the Southeast meet to discuss the most important topics plaguing their respective areas and forecasting how successful they will be this year with educating and developing the youth.</p>
+<p>Because publicly posting my education feels a bit daunting I thought I’d start slow. With this post I’m trying out Julia Silge and Tyler Schnoebelen’s new <a href="https://github.com/juliasilge/tidylo">tidylo</a> package, which she described <a href="https://juliasilge.com/blog/introducing-tidylo/">here</a>. Instead of relying on the old standard TF-IDF it uses log-odds weighted by an uninformative Dirichlet prior. If those words sounded even remotely interesting you should check out the <a href="https://www.cambridge.org/core/journals/political-analysis/article/fightin-words-lexical-feature-selection-and-evaluation-for-identifying-the-content-of-political-conflict/81B3703230D21620B81EB6E2266C7A66">original paper</a>.</p>
+<div id="setup" class="section level2">
+<h2>Setup</h2>
+<p>Let’s get it going. First load up the packages we need.</p>
+<pre class="r"><code>library(tidyverse)
+library(rvest)
+library(tidytext)
+library(tidylo)
+
+theme_set(tidyquant::theme_tq())</code></pre>
+<p>Now we need to pull the transcipts from each coach. <a href="http://www.asapsports.com/show_events.php?category=1&amp;year=2019&amp;title=SOUTHEASTERN+CONFERENCE+FOOTBALL+MEDIA+DAYS">ASAP Sports</a> has numerous sports transcripts available so we’ll build a function to borrow those.</p>
+<pre class="r"><code>get_transcript &lt;- function(id) {
+  
+  url &lt;- str_glue(&quot;http://www.asapsports.com/show_interview.php?id={id}&quot;)
+  
+  df &lt;- read_html(url) %&gt;%
+    html_text(&quot;html/body/table[1]/tbody/tr[2]/td/table/tbody/tr[1]/td[4]/text()[1]&quot;) %&gt;% 
+    enframe(name = NULL) 
+  
+  df %&gt;% 
+    separate_rows(value, sep = &quot;\n&quot;) %&gt;%
+    mutate(start = str_detect(value, &quot;SOUTHEASTERN CONFERENCE FOOTBALL MEDIA DAYS&quot;),
+           start1 = cumsum(start)) %&gt;% 
+    filter(start1 &gt; 1) %&gt;% 
+    slice(4:(n() - 27)) %&gt;%
+    select(value) %&gt;% 
+    transmute(speaker = str_extract(value, &quot;^[A-Z]* [A-Z]*:|Q\\.&quot;),
+              speaker = if_else(speaker %in% c(&quot;I &quot;, &quot;A &quot;), NA_character_, speaker) %&gt;% 
+                str_remove_all(&quot;[:punct:]&quot;),
+              text = str_remove_all(value, &quot;^[A-Z]* [A-Z]*:&quot;) %&gt;% 
+                str_trim) %&gt;% 
+    fill(speaker)
+  
+}</code></pre>
+<p>I could probably have scraped the unique IDs but I figured it’d take me less time to just manually type them out. I then passed each of those to our new get_transcript() function to get the full transcripts.</p>
+<pre class="r"><code>speaker_ids &lt;-  c(152086, 152087, 152106, 152089, 152103, 
+                  152098, 152151, 152119, 152129,
+                  152068, 152067, 152078, 152070,
+                  152080, 152059, 152063, 152058, 152062)
+transcripts &lt;- map_df(speaker_ids, get_transcript)</code></pre>
+</div>
+<div id="tokens" class="section level2">
+<h2>Tokens</h2>
+<p>Let’s tokenize the transcripts and find the log-odds for each speaker.</p>
+<pre class="r"><code>transcript_tokens &lt;- transcripts %&gt;% 
+  unnest_tokens(word, text) %&gt;% 
+  anti_join(stop_words, by = &quot;word&quot;) %&gt;% 
+  count(speaker, word) %&gt;% 
+  filter(!str_detect(speaker, &quot;COMMISSIONER|MODERATOR|Q$&quot;)) %&gt;% 
+  bind_log_odds(speaker, word, n) %&gt;% 
+  arrange(-log_odds)
+
+transcript_tokens</code></pre>
+<pre><code>## # A tibble: 8,586 x 4
+##    speaker       word            n log_odds
+##    &lt;chr&gt;         &lt;chr&gt;       &lt;int&gt;    &lt;dbl&gt;
+##  1 STEVE SHAW    targeting      68     7.85
+##  2 STEVE SHAW    foul           29     5.27
+##  3 STEVE SHAW    contact        27     4.72
+##  4 WILL MUSCHAMP carolina       22     4.70
+##  5 STEVE SHAW    defenseless    23     4.69
+##  6 STEVE SHAW    forcible       23     4.69
+##  7 WILL MUSCHAMP south          23     4.40
+##  8 STEVE SHAW    confirm        20     4.37
+##  9 DEREK MASON   ke&#39;shawn       16     4.22
+## 10 STEVE SHAW    helmet         19     4.15
+## # ... with 8,576 more rows</code></pre>
+<p>Cool. Let’s check this out in a plot. Based on <a href="https://medium.com/@TSchnoebelen/i-dare-say-you-will-never-use-tf-idf-again-4918408b2310">Tyler’s</a> suggestion we would typically filter for terms with log odds above 1.96 so we were confident they were unique to the coach. But we have such little text for each coach that I chose to just display significance with a dashed red line instead.</p>
+<pre class="r"><code>transcript_tokens %&gt;% 
+  group_by(speaker) %&gt;% 
+  slice(1:7) %&gt;% 
+  ungroup() %&gt;% 
+  mutate(word = reorder_within(word, log_odds, speaker)) %&gt;% 
+  ggplot(aes(word, log_odds, fill = n)) + 
+  geom_col() + 
+  geom_hline(yintercept = 1.96, linetype = 2, color = &quot;red&quot;) + 
+  scale_fill_viridis_c(guide = F) + 
+  coord_flip() + 
+  scale_x_reordered() + 
+  facet_wrap(~ speaker, scales = &quot;free_y&quot;, ncol = 3) + 
+  labs(x = &quot;Word&quot;,
+       y = &quot;Weighted Log Odds&quot;,
+       title = &quot;What are the most important words for each coach?&quot;)</code></pre>
+<p><img src="/post/2019-07-25-sec-media-days-2019_files/figure-html/unnamed-chunk-5-1.png" width="1152" style="display: block; margin: auto;" /></p>
+<p>Looks like a lot of coaches like saying their employer’s name out loud. Some coaches seem preoccupied with their QBs. I’m just happy Saban was dropping truth and knowledge about success and establishing relationships with his players.</p>
+<p>I also chose to keep Bill Hancock (College Football Playoff Director), Greg Sankey (Commissioner) and Steve Shaw (Head of Officials) because it was interesting to see how they talked about such different topics from the others. Hancock was mocking the CFP and sending mail to his journalist bosses. Sankey talked about athletes with gambling problems and mental issues, or something like that. Shaw seems very concerned about targeting defenseless helmets on replay with forcible contact.</p>
+</div>
+<div id="bigrams" class="section level2">
+<h2>Bigrams</h2>
+<p>I tend to find bigrams being a little better, so let’s see how those go.</p>
+<p>I’m using a little trick to remove stop words by breaking up the bigram, removing any line that contains a stop word for either word, and then recombining the survivors.</p>
+<pre class="r"><code>transcript_bigrams &lt;- transcripts %&gt;% 
+  unnest_tokens(bigram, text, token = &quot;ngrams&quot;, n = 2) %&gt;% 
+  separate(bigram, c(&quot;word1&quot;, &quot;word2&quot;), sep = &quot; &quot;) %&gt;% 
+  filter(!word1 %in% stop_words$word,
+         !word2 %in% stop_words$word) %&gt;% 
+  unite(bigram, word1, word2, sep = &quot; &quot;) %&gt;% 
+  count(speaker, bigram) %&gt;% 
+  filter(!str_detect(speaker, &quot;COMMISSIONER|MODERATOR|Q$&quot;)) %&gt;% 
+  bind_log_odds(speaker, bigram, n) %&gt;% 
+  arrange(-log_odds)
+
+transcript_bigrams</code></pre>
+<pre><code>## # A tibble: 3,936 x 4
+##    speaker       bigram                 n log_odds
+##    &lt;chr&gt;         &lt;chr&gt;              &lt;int&gt;    &lt;dbl&gt;
+##  1 STEVE SHAW    forcible contact      23     4.82
+##  2 WILL MUSCHAMP south carolina        22     4.63
+##  3 STEVE SHAW    defenseless player    18     4.26
+##  4 STEVE SHAW    15 yard                8     2.83
+##  5 STEVE SHAW    targeting foul         8     2.83
+##  6 STEVE SHAW    yard penalty           8     2.83
+##  7 GUS MALZAHN   playing fast           6     2.62
+##  8 DEREK MASON   ke&#39;shawn vaughn        6     2.55
+##  9 STEVE SHAW    replay official        6     2.45
+## 10 STEVE SHAW    rules committee        6     2.45
+## # ... with 3,926 more rows</code></pre>
+<p>How do these look?</p>
+<pre class="r"><code>transcript_bigrams %&gt;% 
+  group_by(speaker) %&gt;%
+  slice(1:7) %&gt;% 
+  ungroup() %&gt;%
+  mutate(bigram = reorder_within(bigram, log_odds, speaker)) %&gt;% 
+  ggplot(aes(bigram, log_odds, fill = n)) + 
+  geom_col() + 
+  geom_hline(yintercept = 1.96, linetype = 2, color = &quot;red&quot;) +
+  scale_fill_viridis_c(guide = F) + 
+  coord_flip() + 
+  scale_x_reordered() + 
+  facet_wrap(~ speaker, ncol = 3, scales = &quot;free_y&quot;) + 
+  labs(x = &quot;Bigram&quot;,
+       y = &quot;Weighted Log Odds&quot;,
+       title = &quot;What are the most important bigrams for each coach?&quot;)</code></pre>
+<p><img src="/post/2019-07-25-sec-media-days-2019_files/figure-html/unnamed-chunk-7-1.png" width="1152" style="display: block; margin: auto;" /></p>
+<p>Look, no one is surprised that Muschamp is REALLY passionate about his team. I can’t even imagine the intensity he had every time he said it. Malzahn is still wanting to play fast. Saban wants to maintain consistency. Derek Mason is happy to have a player with a national profile. And of course Sankey has to refer to his free labor as “student-athletes.”</p>
+</div>

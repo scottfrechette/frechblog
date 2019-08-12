@@ -1,0 +1,404 @@
+---
+title: Presidential Debates
+author: Scott Frechette
+date: '2019-08-01'
+slug: presidential-debates
+categories:
+  - R
+tags:
+  - politics
+  - debates
+  - text
+---
+
+
+
+<div id="setup" class="section level2">
+<h2>Setup</h2>
+<p>Here’s everything we need to load up to do this.</p>
+<pre class="r"><code>library(tidyverse)
+library(rvest)
+library(lubridate)
+library(janitor)
+library(scales)
+library(tidytext)
+library(textdata)
+library(tidylo)
+library(umap)
+library(ggrepel)
+library(widyr)
+library(igraph)
+library(ggraph)
+
+set.seed(42)
+
+theme_set(theme_light())</code></pre>
+<div id="get-debate-data" class="section level4">
+<h4>Get Debate Data</h4>
+<p>First thing we need to do is scrape the last debate. Washington Post has the transcripts posted so we’ll borrow those. This gives us the first Democratic debate of 2020 and also lets us mess around with some historical data going back 60 years.</p>
+<pre class="r"><code>night1 &lt;- read_html(&quot;https://www.washingtonpost.com/politics/2019/07/31/transcript-first-night-second-democratic-debate/?utm_term=.679169e787bc&quot;) %&gt;%
+  html_nodes(&quot;p&quot;) %&gt;%
+  html_text() %&gt;%
+  enframe(name = NULL) %&gt;%
+  slice(6:n()) %&gt;%
+  mutate(debate = &quot;Democratic Debates: 2019/2020: Jul 30th&quot;,
+         election_year = 2020)
+ 
+night2 &lt;- read_html(&quot;https://www.washingtonpost.com/politics/2019/08/01/transcript-night-second-democratic-debate/?utm_term=.679169e787bc&quot;) %&gt;%
+  html_nodes(&quot;p&quot;) %&gt;%
+  html_text() %&gt;%
+  enframe(name = NULL) %&gt;%
+  slice(5:n()) %&gt;%
+  mutate(debate = &quot;Democratic Debates: 2019/2020: Jul 31st&quot;,
+         election_year = 2020)
+ 
+dem_2020_2 &lt;- bind_rows(night1, night2) %&gt;%
+  rename(text = value) %&gt;%
+  mutate(speaker = str_extract(text, &quot;^[A-Z&#39;\\s]*:&quot;) %&gt;%
+           str_remove(&quot;:&quot;) %&gt;%
+           str_remove(&quot;^ELIZABETH|^KAMALA&quot;),
+         text = str_remove(text, &quot;^[A-Z&#39;\\s]*:&quot;) %&gt;%
+           str_remove_all(&quot;\\([A-Za-z-]*\\)&quot;) %&gt;%
+           str_trim()) %&gt;%
+  fill(speaker) %&gt;%
+  select(speaker, text, debate, election_year) %&gt;%
+  mutate(party = case_when(
+    speaker %in% c(&quot;BASH&quot;, &quot;TAPPER&quot;, &quot;LEMON&quot;, &quot;PROTESTOR&quot;) ~ &quot;NON-CANDIDATE&quot;,
+    TRUE ~ &quot;DEMOCRAT&quot;
+  ))</code></pre>
+<p>Our old pal Tyler Schnoebelen* has gone through the effort to pull all the historical debates so why duplicate his effort?</p>
+<ul>
+<li>Not actually real friends</li>
+</ul>
+<pre class="r"><code>debates &lt;- read_csv(&quot;https://raw.githubusercontent.com/TylerSchnoebelen/US_debates/master/All_American_Presidential_and_VP_debates_since_Kennedy-Nixon-1960.csv&quot;) %&gt;%
+  clean_names() %&gt;%
+  select(-new_id) %&gt;%
+  bind_rows(dem_2020_2) %&gt;%
+  mutate(text = str_remove_all(text, &quot;\\([A-Za-z-]*\\)&quot;),
+         speaker = str_remove(speaker, &quot;^[A-Z]* &quot;),
+         speaker = if_else(str_detect(speaker, &quot;ROURKE&quot;), &quot;O&#39;ROURKE&quot;, speaker)) %&gt;%
+  filter(text != &quot;&quot;)</code></pre>
+</div>
+</div>
+<div id="tokenize" class="section level2">
+<h2>Tokenize</h2>
+<p>Now to tokenize these debates. I’ve gone ahead and created unigrams and bigram so we can play around with both.</p>
+<pre class="r"><code>debates_unigrams &lt;- debates %&gt;%
+  filter(party %in% c(&quot;DEMOCRAT&quot;, &quot;REPUBLICAN&quot;)) %&gt;%
+  unnest_tokens(word, text)
+
+debates_bigrams &lt;- debates %&gt;%
+  filter(party %in% c(&quot;DEMOCRAT&quot;, &quot;REPUBLICAN&quot;)) %&gt;%
+  unnest_tokens(bigram, text, token = &quot;ngrams&quot;, n = 2)</code></pre>
+</div>
+<div id="log-odds" class="section level2">
+<h2>Log Odds</h2>
+<p>Just like last time we’re going to use the <a href="https://github.com/juliasilge/tidylo">tidylo</a> package to calculate the weighted log odds to figure out what tokens matter most for each of our candidates.</p>
+<p>Let’s start with the unigrams. Now that we’ve seen these candidates twice let’s see if we get a feel so what matters more to them this year.</p>
+<pre class="r"><code>debates_unigrams %&gt;%
+  filter(election_year == 2020) %&gt;%
+  anti_join(stop_words, by = &quot;word&quot;) %&gt;%
+  count(speaker, word) %&gt;%
+  bind_log_odds(speaker, word, n) %&gt;%
+  filter(log_odds &gt;= 1.96,
+         n &gt;= 3) %&gt;%
+  group_by(speaker) %&gt;% 
+  slice(1:7) %&gt;%
+  ungroup() %&gt;% 
+  mutate(word = reorder_within(word, log_odds, speaker)) %&gt;%
+  ggplot(aes(word, log_odds, fill = n)) +
+  geom_col() +
+  scale_x_reordered() +
+  scale_fill_viridis_c(guide = F) +
+  coord_flip() +
+  facet_wrap(~ speaker, scales = &quot;free_y&quot;, ncol = 4)</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-5-1.png" width="672" /></p>
+<p>What can we tell? Swalwell wanted Biden to pass the torch to the next generation. Biden spent a lot time defending Obamacare. Sanders is concerned about the fossil fuel industry. Gillibrand is fighting for women. Bullock is from Montana. Gabbard is concerned about Middle East conflicts. Ryan discussed alternative energy.</p>
+<p>Frankly it’s not that helpful. I still prefer bigrams so let’s see if those do us any better.</p>
+<pre class="r"><code>debates_bigrams %&gt;%
+  filter(election_year == 2020) %&gt;%
+  separate(bigram, c(&quot;word1&quot;, &quot;word2&quot;), sep = &quot; &quot;) %&gt;%
+  filter(!word1 %in% stop_words$word,
+         !word2 %in% stop_words$word) %&gt;%
+  unite(bigram, word1, word2, sep = &quot; &quot;) %&gt;%
+  count(speaker, bigram) %&gt;%
+  bind_log_odds(speaker, bigram, n) %&gt;%
+  arrange(-log_odds) %&gt;% 
+  filter(
+    # log_odds &gt;= 1.96,
+    # n &gt;= 3
+    ) %&gt;%
+  group_by(speaker) %&gt;% 
+  slice(1:7) %&gt;% 
+  ungroup() %&gt;% 
+  mutate(bigram = reorder_within(bigram, log_odds, speaker)) %&gt;%
+  ggplot(aes(bigram, log_odds, fill = n)) +
+  geom_col() +
+  scale_x_reordered() +
+  scale_fill_viridis_c(guide = F) +
+  coord_flip() +
+  facet_wrap(~ speaker, scales = &quot;free_y&quot;, ncol = 4)</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-6-1.png" width="672" /></p>
+<p>This looks a lot better.</p>
+<p>In fact, let’s compare it to <a href="https://www.cnn.com/interactive/2019/08/politics/democratic-debate-key-phrases/">CNN’s own analysis of the second debate with tidytext</a>.</p>
+<pre class="r"><code>debates_unigrams %&gt;%
+  filter(election_year == 2020,
+         str_detect(debate, &quot;Jul&quot;)) %&gt;%
+  anti_join(stop_words, by = &quot;word&quot;) %&gt;%
+  count(speaker, word) %&gt;%
+  bind_log_odds(speaker, word, n) %&gt;%
+  filter(log_odds &gt;= 1.96,
+         n &gt;= 3) %&gt;%
+  group_by(speaker) %&gt;% 
+  slice(1:10) %&gt;%
+  ungroup() %&gt;% 
+  mutate(word = reorder_within(word, log_odds, speaker)) %&gt;%
+  ggplot(aes(word, log_odds, fill = n)) +
+  geom_col() +
+  scale_x_reordered() +
+  scale_fill_viridis_c(guide = F) +
+  coord_flip() +
+  facet_wrap(~ speaker, scales = &quot;free_y&quot;, ncol = 4)</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-7-1.png" width="672" /></p>
+<pre class="r"><code>debates_bigrams %&gt;%
+  filter(election_year == 2020,
+         str_detect(debate, &quot;Jul&quot;)) %&gt;%
+  separate(bigram, c(&quot;word1&quot;, &quot;word2&quot;), sep = &quot; &quot;) %&gt;%
+  filter(!word1 %in% stop_words$word,
+         !word2 %in% stop_words$word) %&gt;%
+  unite(bigram, word1, word2, sep = &quot; &quot;) %&gt;%
+  count(speaker, bigram) %&gt;%
+  bind_log_odds(speaker, bigram, n) %&gt;%
+  arrange(-log_odds) %&gt;% 
+  filter(
+    log_odds &gt;= 1.5,
+    # n &gt;= 3
+    ) %&gt;%
+  group_by(speaker) %&gt;% 
+  slice(1:10) %&gt;% 
+  ungroup() %&gt;% 
+  mutate(bigram = reorder_within(bigram, log_odds, speaker)) %&gt;%
+  ggplot(aes(bigram, log_odds, fill = n)) +
+  geom_col() +
+  scale_x_reordered() +
+  scale_fill_viridis_c(guide = F) +
+  coord_flip() +
+  facet_wrap(~ speaker, scales = &quot;free_y&quot;, ncol = 4)</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-8-1.png" width="672" /></p>
+<p>Which of CNN’s key phrases identified with TF-IDF did we match? Let’s compare their list to the top 10 unigrams and bigrams for each candidate by weighted log odds:</p>
+<ul>
+<li>Bennet: <strong>universal healthcare</strong>, <strong>public option</strong>, <strong>divisive politics</strong></li>
+<li>Biden: <strong>deeply involved</strong>, <strong>fundamentally change</strong>, <strong>obamacare</strong>, hyde amendment</li>
+<li>De Blasio: <strong>NAFTA</strong>, <strong>status quo</strong>, wealthy, iran</li>
+<li>Booker: <strong>civil courts</strong>, <strong>crime bill</strong>, <strong>common purpose</strong></li>
+<li>Bullock: <strong>koch brothers</strong>, <strong>dark money</strong>, citizens united</li>
+<li>Buttigieg: <strong>structural reform</strong>, <strong>endless war</strong>, courage, community</li>
+<li>Castro: <strong>family separation</strong>, <strong>immigration plan</strong>, begin impeachment</li>
+<li>Delaney: <strong>impossible promises</strong>, <strong>real solutions</strong>, <strong>private sector</strong></li>
+<li>Gabbard: <strong>cold war</strong>, <strong>deployed</strong>, betrayed, <strong>fair trade</strong></li>
+<li>Gillibrand: America’s women, <strong>deterioration</strong>, avoiding responsibility</li>
+<li>Harris: <strong>justice</strong>, <strong>civil rights</strong>, <strong>American families</strong>, <strong>death penalty</strong></li>
+<li>Hickenlooper: <strong>track record</strong>, <strong>trade war</strong>, <strong>people choose</strong></li>
+<li>Inslee: <strong>clean energy</strong>, fossil fuels, <strong>climate crisis</strong></li>
+<li>Klobuchar: <strong>background checks</strong>, border security, <strong>bread and butter issue</strong></li>
+<li>O’Rourke: <strong>electoral college</strong>, human rights, <strong>El Paso</strong></li>
+<li>Ryan: <strong>manufacturing</strong>, auto workers, <strong>China</strong></li>
+<li>Sanders: drug companies, <strong>fossil fuel</strong>, <strong>corporate America</strong>, <strong>transform</strong></li>
+<li>Warren: giant corporations, <strong>insurance company</strong>, <strong>fight</strong>, risk</li>
+<li>Williamson: <strong>deep truth</strong>, false god, <strong>collectivized hazard</strong>, heal</li>
+<li>Yang: <strong>game changer</strong>, automation, <strong>manufacturing jobs</strong>, <strong>reality TV</strong></li>
+</ul>
+<p>I’d say that’s pretty damn good. And let’s note they didn’t publish their code in the article so hard to know how much human intuition was added to their final list.</p>
+</div>
+<div id="umap" class="section level2">
+<h2>UMAP</h2>
+<p>Another technique I like a lot is called <a href="https://arxiv.org/abs/1802.03426">UMAP</a>. It’s similar to PCA and t-SNE but I tend to think it works a little better.</p>
+<p>First can we apply UMAP to the words used by candidates to plot candidates in space near their neighbors?</p>
+<pre class="r"><code>debates_unigrams_umap &lt;- debates_unigrams %&gt;%
+  filter(election_year == 2020) %&gt;%
+  count(speaker, word) %&gt;%
+  bind_log_odds(speaker, word, n) %&gt;% 
+  cast_sparse(speaker, word, log_odds) %&gt;% 
+  as.matrix() %&gt;% 
+  umap()
+
+debates_unigrams_umap$layout %&gt;% 
+  as_tibble(rownames = &quot;candidate&quot;) %&gt;% 
+  ggplot(aes(V1, V2, label = candidate)) + 
+  geom_point() + 
+  geom_text_repel() + 
+  geom_vline(xintercept = 0, linetype = 2) + 
+  geom_hline(yintercept = 0, linetype = 2)</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-9-1.png" width="672" /></p>
+<p>To be honest I could probably squint hard and make out some patterns, but it looks generally random to my tiny human brain.</p>
+<p>So what about reversing that and visualizing the words in space instead? I’ll remove stop words to help focus on key words.</p>
+<pre class="r"><code>top_words &lt;- debates_unigrams %&gt;% 
+  count(word, sort = T) %&gt;% 
+  filter(str_detect(word, &quot;^[A-Za-z]&quot;)) %&gt;% 
+  anti_join(stop_words, by = &quot;word&quot;) %&gt;% 
+  top_n(200, n)
+
+debates_unigrams %&gt;%
+  filter(election_year == 2020) %&gt;% 
+  inner_join(top_words, by = &quot;word&quot;) %&gt;% 
+  count(speaker, word) %&gt;% 
+  cast_sparse(word, speaker, n) %&gt;% 
+  as.matrix() %&gt;% 
+  umap() %&gt;% 
+  .$layout %&gt;% 
+  as_tibble(rownames = &quot;word&quot;) %&gt;% 
+  ggplot(aes(V1, V2, label = word)) + 
+  geom_point() + 
+  geom_text_repel() + 
+  geom_vline(xintercept = 0, linetype = 2) + 
+  geom_hline(yintercept = 0, linetype = 2)</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-10-1.png" width="672" /></p>
+<p>Looks like some good clusters in there we could use to help guide us in more unsupervised learning techniques like K-means clustering or topic modeling.</p>
+<p>Just for fun let’s see what happens if I combine UMAP with our weighted log odds from above.</p>
+<pre class="r"><code>debates_unigrams %&gt;%
+  filter(election_year == 2020) %&gt;% 
+  inner_join(top_words, by = &quot;word&quot;) %&gt;% 
+  count(speaker, word) %&gt;% 
+  bind_log_odds(word, speaker, n) %&gt;% 
+  cast_sparse(word, speaker, log_odds) %&gt;% 
+  as.matrix() %&gt;% 
+  umap() %&gt;% 
+  .$layout %&gt;% 
+  as_tibble(rownames = &quot;word&quot;) %&gt;% 
+  ggplot(aes(V1, V2, label = word)) + 
+  geom_point() + 
+  geom_text_repel() + 
+  geom_vline(xintercept = 0, linetype = 2) + 
+  geom_hline(yintercept = 0, linetype = 2)</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-11-1.png" width="672" /></p>
+<p>Looks even better and shows the flexibility and power of using weighted log odds for any bag of words analysis.</p>
+</div>
+<div id="sentiment-analysis" class="section level2">
+<h2>Sentiment Analysis</h2>
+<p>Let’s have a little more fun and do some sentiment analysis. Julia Silge has a <a href="https://juliasilge.com/blog/sentiment-lexicons/">recent post</a> about correcting their mistakes with sentiment analysis lexicons. I’ll leave it to the reader to check that out and download the updates yourselves.</p>
+<div id="bing" class="section level4">
+<h4>Bing</h4>
+<p>First up is the Bing lexicon, which characterizes words as positive or negative. Let’s apply this to our text and find the rate of both positive and negative words for each candidate:</p>
+<pre class="r"><code>debates_unigrams_bing &lt;- debates_unigrams %&gt;% 
+  filter(election_year == 2020) %&gt;% 
+  add_count(speaker, name = &quot;words&quot;) %&gt;% 
+  inner_join(get_sentiments(&quot;bing&quot;), by = &quot;word&quot;) %&gt;% 
+  count(speaker, sentiment, words, name = &quot;sentiment_score&quot;) %&gt;%
+  mutate(score_adj = sentiment_score / words,
+         score_adj_100 = score_adj * 100, 
+         speaker = reorder_within(speaker, score_adj, sentiment))
+
+debates_unigrams_bing %&gt;% 
+  ggplot(aes(speaker, score_adj_100, fill = sentiment == &quot;positive&quot;)) +
+  geom_col() +
+  coord_flip() + 
+  facet_wrap(~ sentiment, scales = &quot;free_y&quot;) + 
+  scale_x_reordered() + 
+  guides(fill = F) + 
+  labs(y = &quot;Positive/Negative Score (per 100 words)&quot;,
+       x = &quot;Candidate&quot;)</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-12-1.png" width="672" /></p>
+<p>Based on this Gabbard, Booker, and Swalwell are the Debbie Downers and Inslee and Hickenlooper are the optimists.</p>
+</div>
+<div id="afinn" class="section level4">
+<h4>AFinn</h4>
+<p>What about trying out the AFINN lexicon? This goes a step further than Bing and assigns each word a sentiment score between -5 and 5.</p>
+<pre class="r"><code>debates_unigrams_afinn &lt;- debates_unigrams %&gt;% 
+  filter(election_year == 2020) %&gt;% 
+  add_count(speaker, name = &quot;words&quot;) %&gt;% 
+  inner_join(get_sentiments(&quot;afinn&quot;), by = &quot;word&quot;) %&gt;% 
+  count(speaker, words, wt = value, name = &quot;sentiment_score&quot;) %&gt;% 
+  mutate(score_adj = sentiment_score / words,
+         score_adj_100 = score_adj * 100) %&gt;%
+  arrange(-score_adj)
+
+debates_unigrams_afinn %&gt;% 
+  ggplot(aes(reorder(speaker, score_adj), score_adj_100, fill = score_adj &gt; 0)) +
+  geom_col() + 
+  coord_flip() + 
+  guides(fill = F) +
+  labs(y = &quot;Adjusted Sentiment Score&quot;,
+       x = &quot;Candidate&quot;)</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-13-1.png" width="672" /></p>
+<p>Swalwell and Gabbard are still negative but now Sanders has joined them. So maybe he says less negative words but they tend to be more dramatic, which feels reasonable to me.</p>
+</div>
+<div id="nrc" class="section level4">
+<h4>NRC</h4>
+<p>Finally let’s check out the NRC lexicon. This categorizes words as positive/negative like Bing but also adds more categories for the eight basic emotions of anger, anticipation, disgust, fear, joy, sadness, surprise, and trust.</p>
+<pre class="r"><code>debates_unigrams_nrc &lt;- debates_unigrams %&gt;% 
+  filter(election_year == 2020) %&gt;% 
+  add_count(speaker, name = &quot;words&quot;) %&gt;% 
+  inner_join(get_sentiments(&quot;nrc&quot;), by = &quot;word&quot;) %&gt;% 
+  count(speaker, words, sentiment) %&gt;% 
+  mutate(score = n / words) %&gt;% 
+  arrange(-n)</code></pre>
+<p>How do the candidates compare for each sentiment?</p>
+<pre class="r"><code>debates_unigrams_nrc %&gt;% 
+  mutate(speaker_ordered = reorder_within(speaker, score, sentiment)) %&gt;% 
+  ggplot(aes(speaker_ordered, score, fill = score)) +
+  geom_col() + 
+  scale_x_reordered() +
+  scale_y_continuous(labels = percent) + 
+  coord_flip() + 
+  facet_wrap(~ sentiment, scales = &quot;free&quot;) +
+  guides(fill = F) +
+  scale_fill_viridis_c()</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-15-1.png" width="672" /></p>
+<p>Positive/negative sentiments look similar to our Bing analysis above. Now we can actually see that Swalwell scored highest in fear and sadness whereas Gabbard scored highest in disgust. Meanwhile Inslee displayed a lot of joy and trust</p>
+<p>What if we transformed these scores into sentiment radar charts for our candidates? We’ll scale each sentiment so we can truly assess each candidate against the others.</p>
+<pre class="r"><code>debates_unigrams_nrc %&gt;% 
+  select(-n, -words) %&gt;% 
+  spread(sentiment, score) %&gt;%
+  mutate_at(vars(-speaker), rescale) %&gt;% 
+  gather(sentiment, score, -speaker) %&gt;% 
+  ggplot(aes(sentiment, score, group = 1, color = speaker)) + 
+  geom_polygon(aes(fill = speaker)) + 
+  coord_polar() + 
+  facet_wrap(~ speaker) + 
+  guides(color = FALSE, fill = FALSE) + 
+  scale_y_continuous(labels = percent) + 
+  theme(axis.title = element_blank())</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-16-1.png" width="672" /></p>
+<p>Not too bad considering we didn’t adjust for valence shifters (negations, intensifiers, or diminishers).</p>
+</div>
+</div>
+<div id="pairwise-correlation" class="section level2">
+<h2>Pairwise Correlation</h2>
+<p>Let’s try one more technique and see how it works out. Let’s see if we can find decent clusters by identifying which words are highly correlated with each other. For this I’ll go ahead and lemmatize the words</p>
+<pre class="r"><code>debates_unigrams_2020 &lt;- debates %&gt;%
+  filter(election_year == 2020,
+         party == &quot;DEMOCRAT&quot;) %&gt;% 
+  mutate(response = row_number()) %&gt;% 
+  unnest_tokens(word, text) %&gt;% 
+  anti_join(stop_words, by = &quot;word&quot;) %&gt;% 
+  mutate(lemma = textstem::lemmatize_words(word)) %&gt;% 
+  count(speaker, response, lemma) %&gt;% 
+  add_count(lemma, wt = n, name = &quot;total&quot;)
+
+debates_unigrams_cor &lt;- debates_unigrams_2020 %&gt;% 
+  filter(total &gt; 5) %&gt;% 
+  pairwise_cor(lemma, response, n)
+
+debates_unigrams_cor_filtered &lt;- debates_unigrams_cor %&gt;% 
+  filter(correlation &gt;= 0.4)
+
+debates_unigrams_2020_count &lt;- debates_unigrams_2020 %&gt;% 
+  filter(lemma %in% 
+           debates_unigrams_cor_filtered$item1) %&gt;%
+  distinct(lemma, total) %&gt;% 
+  mutate(total = log2(total) + 3)
+
+debates_unigrams_cor_filtered %&gt;%
+  graph_from_data_frame(vertices = debates_unigrams_2020_count) %&gt;%
+  ggraph(layout = &quot;fr&quot;) +
+  geom_edge_link(aes(edge_alpha = correlation), show.legend = FALSE) +
+  geom_node_point(aes(size = total),
+                  color = &quot;lightblue&quot;) + 
+  geom_node_text(aes(label = name), repel = TRUE) +
+  theme_void() + 
+  guides(size = FALSE)</code></pre>
+<p><img src="/post/2019-08-01-presidential-debates_files/figure-html/unnamed-chunk-17-1.png" width="672" /></p>
+</div>
+<div id="conclusion" class="section level2">
+<h2>Conclusion</h2>
+</div>
