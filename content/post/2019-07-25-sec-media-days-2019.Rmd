@@ -1,0 +1,155 @@
+---
+title: SEC Media Days 2019
+author: Scott Frechette
+date: '2019-07-25'
+categories:
+  - R
+tags:
+  - football
+slug: sec-media-days-2019
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE, 
+                      fig.width = 12, fig.height = 8, fig.align = "center")
+```
+
+I wanted to start a blog to document my NLP journey, and as a resident of Alabama I could think of no better place to start than analyzing SEC Media Days. Every year the highest paid public officials from every state in the Southeast meet to discuss the most important topics plaguing their respective areas and forecasting how successful they will be this year with educating and developing the youth.
+
+Because publicly posting my education feels a bit daunting I thought I'd start slow. With this post I'm trying out Julia Silge and Tyler Schnoebelen's new [tidylo](https://github.com/juliasilge/tidylo) package, which she described [here](https://juliasilge.com/blog/introducing-tidylo/). Instead of relying on the old standard TF-IDF it uses log-odds weighted by an uninformative Dirichlet prior. If those words sounded even remotely interesting you should check out the [original paper](https://www.cambridge.org/core/journals/political-analysis/article/fightin-words-lexical-feature-selection-and-evaluation-for-identifying-the-content-of-political-conflict/81B3703230D21620B81EB6E2266C7A66). 
+
+## Setup
+
+Let's get it going. First load up the packages we need.
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(rvest)
+library(tidytext)
+library(tidylo)
+
+theme_set(tidyquant::theme_tq())
+```
+
+Now we need to pull the transcipts from each coach. [ASAP Sports](http://www.asapsports.com/show_events.php?category=1&year=2019&title=SOUTHEASTERN+CONFERENCE+FOOTBALL+MEDIA+DAYS) has numerous sports transcripts available so we'll build a function to borrow those.
+
+```{r}
+get_transcript <- function(id) {
+  
+  url <- str_glue("http://www.asapsports.com/show_interview.php?id={id}")
+  
+  df <- read_html(url) %>%
+    html_text("html/body/table[1]/tbody/tr[2]/td/table/tbody/tr[1]/td[4]/text()[1]") %>% 
+    enframe(name = NULL) 
+  
+  df %>% 
+    separate_rows(value, sep = "\n") %>%
+    mutate(start = str_detect(value, "SOUTHEASTERN CONFERENCE FOOTBALL MEDIA DAYS"),
+           start1 = cumsum(start)) %>% 
+    filter(start1 > 1) %>% 
+    slice(4:(n() - 27)) %>%
+    select(value) %>% 
+    transmute(speaker = str_extract(value, "^[A-Z]* [A-Z]*:|Q\\."),
+              speaker = if_else(speaker %in% c("I ", "A "), NA_character_, speaker) %>% 
+                str_remove_all("[:punct:]"),
+              text = str_remove_all(value, "^[A-Z]* [A-Z]*:") %>% 
+                str_trim) %>% 
+    fill(speaker)
+  
+}
+```
+
+I could probably have scraped the unique IDs but I figured it'd take me less time to just manually type them out. I then passed each of those to our new get_transcript() function to get the full transcripts.
+
+```{r cache=TRUE}
+
+speaker_ids <-  c(152086, 152087, 152106, 152089, 152103, 
+                  152098, 152151, 152119, 152129,
+                  152068, 152067, 152078, 152070,
+                  152080, 152059, 152063, 152058, 152062)
+transcripts <- map_df(speaker_ids, get_transcript)
+```
+
+## Tokens
+
+Let's tokenize the transcripts and find the log-odds for each speaker. 
+
+```{r}
+transcript_tokens <- transcripts %>% 
+  unnest_tokens(word, text) %>% 
+  anti_join(stop_words, by = "word") %>% 
+  count(speaker, word) %>% 
+  filter(!str_detect(speaker, "COMMISSIONER|MODERATOR|Q$")) %>% 
+  bind_log_odds(speaker, word, n) %>% 
+  arrange(-log_odds)
+
+transcript_tokens
+```
+
+Cool. Let's check this out in a plot. Based on [Tyler's](https://medium.com/@TSchnoebelen/i-dare-say-you-will-never-use-tf-idf-again-4918408b2310) suggestion we would typically filter for terms with log odds above 1.96 so we were confident they were unique to the coach. But we have such little text for each coach that I chose to just display significance with a dashed red line instead. 
+
+```{r}
+transcript_tokens %>% 
+  group_by(speaker) %>% 
+  slice(1:7) %>% 
+  ungroup() %>% 
+  mutate(word = reorder_within(word, log_odds, speaker)) %>% 
+  ggplot(aes(word, log_odds, fill = n)) + 
+  geom_col() + 
+  geom_hline(yintercept = 1.96, linetype = 2, color = "red") + 
+  scale_fill_viridis_c(guide = F) + 
+  coord_flip() + 
+  scale_x_reordered() + 
+  facet_wrap(~ speaker, scales = "free_y", ncol = 3) + 
+  labs(x = "Word",
+       y = "Weighted Log Odds",
+       title = "What are the most important words for each coach?")
+```
+
+Looks like a lot of coaches like saying their employer's name out loud. Some coaches seem preoccupied with their QBs. I'm just happy Saban was dropping truth and knowledge about success and establishing relationships with his players. 
+
+I also chose to keep Bill Hancock (College Football Playoff Director), Greg Sankey (Commissioner) and Steve Shaw (Head of Officials) because it was interesting to see how they talked about such different topics from the others. Hancock was mocking the CFP and sending mail to his journalist bosses. Sankey talked about athletes with gambling problems and mental issues, or something like that. Shaw seems very concerned about targeting defenseless helmets on replay with forcible contact. 
+
+## Bigrams
+
+I tend to find bigrams being a little better, so let's see how those go. 
+
+I'm using a little trick to remove stop words by breaking up the bigram, removing any line that contains a stop word for either word, and then recombining the survivors. 
+
+```{r}
+transcript_bigrams <- transcripts %>% 
+  unnest_tokens(bigram, text, token = "ngrams", n = 2) %>% 
+  separate(bigram, c("word1", "word2"), sep = " ") %>% 
+  filter(!word1 %in% stop_words$word,
+         !word2 %in% stop_words$word) %>% 
+  unite(bigram, word1, word2, sep = " ") %>% 
+  count(speaker, bigram) %>% 
+  filter(!str_detect(speaker, "COMMISSIONER|MODERATOR|Q$")) %>% 
+  bind_log_odds(speaker, bigram, n) %>% 
+  arrange(-log_odds)
+
+transcript_bigrams
+```
+
+
+How do these look? 
+
+```{r}
+transcript_bigrams %>% 
+  group_by(speaker) %>%
+  slice(1:7) %>% 
+  ungroup() %>%
+  mutate(bigram = reorder_within(bigram, log_odds, speaker)) %>% 
+  ggplot(aes(bigram, log_odds, fill = n)) + 
+  geom_col() + 
+  geom_hline(yintercept = 1.96, linetype = 2, color = "red") +
+  scale_fill_viridis_c(guide = F) + 
+  coord_flip() + 
+  scale_x_reordered() + 
+  facet_wrap(~ speaker, ncol = 3, scales = "free_y") + 
+  labs(x = "Bigram",
+       y = "Weighted Log Odds",
+       title = "What are the most important bigrams for each coach?")
+```
+
+Look, no one is surprised that Muschamp is REALLY passionate about his team. I can't even imagine the intensity he had every time he said it. Malzahn is still wanting to play fast. Saban wants to maintain consistency. Derek Mason is happy to have a player with a national profile. And of course Sankey has to refer to his free labor as "student-athletes." 
