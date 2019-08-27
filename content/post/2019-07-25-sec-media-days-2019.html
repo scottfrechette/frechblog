@@ -12,6 +12,19 @@ slug: sec-media-days-2019
 
 
 
+<p>```{r setup, include=FALSE}title: SEC Media Days 2019
+author: Scott Frechette
+date: ‘2019-07-25’
+categories:
+- sports
+tags:
+- R
+- football
+- text
+slug: sec-media-days-2019</p>
+<p>knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+options(width = 100, dplyr.width = 100)
+```</p>
 <p>I wanted to start a blog to document my NLP journey, and as a resident of Alabama I could think of no better place to start than analyzing SEC Media Days. Every year the highest paid public officials in the Southeast meet to discuss the most important topics plaguing their respective areas and forecasting how successful they will be this year with educating and developing the youth.</p>
 <p>Actually it’s just coaches engaging in coachspeak.</p>
 <p>Because publicly posting my education feels a bit daunting I thought I’d start slow. With this post I’m trying out Julia Silge and Tyler Schnoebelen’s new <a href="https://github.com/juliasilge/tidylo">tidylo</a> package, which she described <a href="https://juliasilge.com/blog/introducing-tidylo/">here</a>. Instead of relying on the old standard TF-IDF it uses log-odds weighted by an uninformative Dirichlet prior. If those words sounded even remotely interesting you should check out the <a href="https://www.cambridge.org/core/journals/political-analysis/article/fightin-words-lexical-feature-selection-and-evaluation-for-identifying-the-content-of-political-conflict/81B3703230D21620B81EB6E2266C7A66">original paper</a>.</p>
@@ -57,18 +70,18 @@ transcripts &lt;- map_df(speaker_ids, get_transcript)
 
 transcripts</code></pre>
 <pre><code>## # A tibble: 1,031 x 2
-##    speaker    text                                                                                  
-##    &lt;chr&gt;      &lt;chr&gt;                                                                                 
-##  1 STEVE SHAW We&#39;re going to do two things today.  I know we still have people coming in, but we&#39;re~
-##  2 STEVE SHAW And then the second part of this is going to be interactive.  Hopefully you have -- i~
-##  3 STEVE SHAW So, this document, and I&#39;m going to put it up here, it&#39;s also on the board, was reall~
-##  4 STEVE SHAW Now, unfortunately not all of the activities are captured here, but the majority of t~
-##  5 STEVE SHAW So, the first question we&#39;re going to hit today is, do you evaluate these guys?  Is t~
-##  6 STEVE SHAW So every play in every game, just like the players, every play in every game is grade~
-##  7 STEVE SHAW You can have a missed call.  It&#39;s still negative, but an incorrect -- when you put yo~
-##  8 STEVE SHAW Many times there&#39;s plays with comment only to give feedback to the officials, so they~
-##  9 STEVE SHAW The grading then goes that position specialist to validate it for that specific posit~
-## 10 STEVE SHAW So that&#39;s the accountability on a weekly basis, but then if you flip the document to ~
+##    speaker    text                                                         
+##    &lt;chr&gt;      &lt;chr&gt;                                                        
+##  1 STEVE SHAW We&#39;re going to do two things today.  I know we still have pe~
+##  2 STEVE SHAW And then the second part of this is going to be interactive.~
+##  3 STEVE SHAW So, this document, and I&#39;m going to put it up here, it&#39;s als~
+##  4 STEVE SHAW Now, unfortunately not all of the activities are captured he~
+##  5 STEVE SHAW So, the first question we&#39;re going to hit today is, do you e~
+##  6 STEVE SHAW So every play in every game, just like the players, every pl~
+##  7 STEVE SHAW You can have a missed call.  It&#39;s still negative, but an inc~
+##  8 STEVE SHAW Many times there&#39;s plays with comment only to give feedback ~
+##  9 STEVE SHAW The grading then goes that position specialist to validate i~
+## 10 STEVE SHAW So that&#39;s the accountability on a weekly basis, but then if ~
 ## # ... with 1,021 more rows</code></pre>
 </div>
 <div id="tokens" class="section level2">
