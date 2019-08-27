@@ -6,12 +6,14 @@ categories:
   - R
 tags:
   - football
+  - text
 slug: sec-media-days-2019
 ---
 
 
 
-<p>I wanted to start a blog to document my NLP journey, and as a resident of Alabama I could think of no better place to start than analyzing SEC Media Days. Every year the highest paid public officials from every state in the Southeast meet to discuss the most important topics plaguing their respective areas and forecasting how successful they will be this year with educating and developing the youth.</p>
+<p>I wanted to start a blog to document my NLP journey, and as a resident of Alabama I could think of no better place to start than analyzing SEC Media Days. Every year the highest paid public officials in the Southeast meet to discuss the most important topics plaguing their respective areas and forecasting how successful they will be this year with educating and developing the youth.</p>
+<p>Actually it’s just coaches engaging in coachspeak.</p>
 <p>Because publicly posting my education feels a bit daunting I thought I’d start slow. With this post I’m trying out Julia Silge and Tyler Schnoebelen’s new <a href="https://github.com/juliasilge/tidylo">tidylo</a> package, which she described <a href="https://juliasilge.com/blog/introducing-tidylo/">here</a>. Instead of relying on the old standard TF-IDF it uses log-odds weighted by an uninformative Dirichlet prior. If those words sounded even remotely interesting you should check out the <a href="https://www.cambridge.org/core/journals/political-analysis/article/fightin-words-lexical-feature-selection-and-evaluation-for-identifying-the-content-of-political-conflict/81B3703230D21620B81EB6E2266C7A66">original paper</a>.</p>
 <div id="setup" class="section level2">
 <h2>Setup</h2>
@@ -51,11 +53,27 @@ theme_set(tidyquant::theme_tq())</code></pre>
                   152098, 152151, 152119, 152129,
                   152068, 152067, 152078, 152070,
                   152080, 152059, 152063, 152058, 152062)
-transcripts &lt;- map_df(speaker_ids, get_transcript)</code></pre>
+transcripts &lt;- map_df(speaker_ids, get_transcript)
+
+transcripts</code></pre>
+<pre><code>## # A tibble: 1,031 x 2
+##    speaker    text                                                                                  
+##    &lt;chr&gt;      &lt;chr&gt;                                                                                 
+##  1 STEVE SHAW We&#39;re going to do two things today.  I know we still have people coming in, but we&#39;re~
+##  2 STEVE SHAW And then the second part of this is going to be interactive.  Hopefully you have -- i~
+##  3 STEVE SHAW So, this document, and I&#39;m going to put it up here, it&#39;s also on the board, was reall~
+##  4 STEVE SHAW Now, unfortunately not all of the activities are captured here, but the majority of t~
+##  5 STEVE SHAW So, the first question we&#39;re going to hit today is, do you evaluate these guys?  Is t~
+##  6 STEVE SHAW So every play in every game, just like the players, every play in every game is grade~
+##  7 STEVE SHAW You can have a missed call.  It&#39;s still negative, but an incorrect -- when you put yo~
+##  8 STEVE SHAW Many times there&#39;s plays with comment only to give feedback to the officials, so they~
+##  9 STEVE SHAW The grading then goes that position specialist to validate it for that specific posit~
+## 10 STEVE SHAW So that&#39;s the accountability on a weekly basis, but then if you flip the document to ~
+## # ... with 1,021 more rows</code></pre>
 </div>
 <div id="tokens" class="section level2">
 <h2>Tokens</h2>
-<p>Let’s tokenize the transcripts and find the log-odds for each speaker.</p>
+<p>Let’s tokenize the transcripts and find the log-odds for each speaker. Luckily with <code>tidylo</code> it’s as simple as calling <code>bind_log_odds</code> after counting words spoken by each coach.</p>
 <pre class="r"><code>transcript_tokens &lt;- transcripts %&gt;% 
   unnest_tokens(word, text) %&gt;% 
   anti_join(stop_words, by = &quot;word&quot;) %&gt;% 
@@ -79,7 +97,7 @@ transcript_tokens</code></pre>
 ##  9 DEREK MASON   ke&#39;shawn       16     4.22
 ## 10 STEVE SHAW    helmet         19     4.15
 ## # ... with 8,576 more rows</code></pre>
-<p>Cool. Let’s check this out in a plot. Based on <a href="https://medium.com/@TSchnoebelen/i-dare-say-you-will-never-use-tf-idf-again-4918408b2310">Tyler’s</a> suggestion we would typically filter for terms with log odds above 1.96 so we were confident they were unique to the coach. But we have such little text for each coach that I chose to just display significance with a dashed red line instead.</p>
+<p>Cool. Let’s check this out in a plot. Based on <a href="https://medium.com/@TSchnoebelen/i-dare-say-you-will-never-use-tf-idf-again-4918408b2310">Tyler’s</a> suggestion we would typically filter for terms with log odds above 1.96 so we were confident they were unique to the coach. But we have such little text for each coach that I chose to just display significance with a dashed red line instead. I’m also choosing to fill how many times the coach uttered a particular word to give a sense of frequency vs importance.</p>
 <pre class="r"><code>transcript_tokens %&gt;% 
   group_by(speaker) %&gt;% 
   slice(1:7) %&gt;% 
@@ -95,13 +113,13 @@ transcript_tokens</code></pre>
   labs(x = &quot;Word&quot;,
        y = &quot;Weighted Log Odds&quot;,
        title = &quot;What are the most important words for each coach?&quot;)</code></pre>
-<p><img src="/post/2019-07-25-sec-media-days-2019_files/figure-html/unnamed-chunk-5-1.png" width="1152" style="display: block; margin: auto;" /></p>
+<p><img src="/post/2019-07-25-sec-media-days-2019_files/figure-html/unnamed-chunk-7-1.png" width="672" /></p>
 <p>Looks like a lot of coaches like saying their employer’s name out loud. Some coaches seem preoccupied with their QBs. I’m just happy Saban was dropping truth and knowledge about success and establishing relationships with his players.</p>
 <p>I also chose to keep Bill Hancock (College Football Playoff Director), Greg Sankey (Commissioner) and Steve Shaw (Head of Officials) because it was interesting to see how they talked about such different topics from the others. Hancock was mocking the CFP and sending mail to his journalist bosses. Sankey talked about athletes with gambling problems and mental issues, or something like that. Shaw seems very concerned about targeting defenseless helmets on replay with forcible contact.</p>
 </div>
 <div id="bigrams" class="section level2">
 <h2>Bigrams</h2>
-<p>I tend to find bigrams being a little better, so let’s see how those go.</p>
+<p>I tend to find bigrams being a little better, so let’s see how those go with log odds.</p>
 <p>I’m using a little trick to remove stop words by breaking up the bigram, removing any line that contains a stop word for either word, and then recombining the survivors.</p>
 <pre class="r"><code>transcript_bigrams &lt;- transcripts %&gt;% 
   unnest_tokens(bigram, text, token = &quot;ngrams&quot;, n = 2) %&gt;% 
@@ -145,6 +163,7 @@ transcript_bigrams</code></pre>
   labs(x = &quot;Bigram&quot;,
        y = &quot;Weighted Log Odds&quot;,
        title = &quot;What are the most important bigrams for each coach?&quot;)</code></pre>
-<p><img src="/post/2019-07-25-sec-media-days-2019_files/figure-html/unnamed-chunk-7-1.png" width="1152" style="display: block; margin: auto;" /></p>
-<p>Look, no one is surprised that Muschamp is REALLY passionate about his team. I can’t even imagine the intensity he had every time he said it. Malzahn is still wanting to play fast. Saban wants to maintain consistency. Derek Mason is happy to have a player with a national profile. And of course Sankey has to refer to his free labor as “student-athletes.”</p>
+<p><img src="/post/2019-07-25-sec-media-days-2019_files/figure-html/unnamed-chunk-9-1.png" width="864" style="display: block; margin: auto;" /></p>
+<p>Look, no one is surprised that Muschamp is REALLY passionate about his team. I can’t even imagine the intensity he had every time he said it. Malzahn is still wanting to play fast. Saban is consistent as always. Derek Mason is happy to have a player with a national profile. And of course Sankey has to refer to his free labor as “student-athletes.”</p>
+<p>Overall not a bad way to quickly summarize what the coaches talk about. We all know you’ll get about as much out of any basic text analysis of these coaches as actually watching a press conference these days. But maybe one day Lane Kiffin will come back to us and entertain us a little more.</p>
 </div>

@@ -6,15 +6,18 @@ categories:
   - R
 tags:
   - football
+  - text
 slug: sec-media-days-2019
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE, 
-                      fig.width = 12, fig.height = 8, fig.align = "center")
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+options(width = 100, dplyr.width = 100)
 ```
 
-I wanted to start a blog to document my NLP journey, and as a resident of Alabama I could think of no better place to start than analyzing SEC Media Days. Every year the highest paid public officials from every state in the Southeast meet to discuss the most important topics plaguing their respective areas and forecasting how successful they will be this year with educating and developing the youth.
+I wanted to start a blog to document my NLP journey, and as a resident of Alabama I could think of no better place to start than analyzing SEC Media Days. Every year the highest paid public officials in the Southeast meet to discuss the most important topics plaguing their respective areas and forecasting how successful they will be this year with educating and developing the youth.
+
+Actually it's just coaches engaging in coachspeak. 
 
 Because publicly posting my education feels a bit daunting I thought I'd start slow. With this post I'm trying out Julia Silge and Tyler Schnoebelen's new [tidylo](https://github.com/juliasilge/tidylo) package, which she described [here](https://juliasilge.com/blog/introducing-tidylo/). Instead of relying on the old standard TF-IDF it uses log-odds weighted by an uninformative Dirichlet prior. If those words sounded even remotely interesting you should check out the [original paper](https://www.cambridge.org/core/journals/political-analysis/article/fightin-words-lexical-feature-selection-and-evaluation-for-identifying-the-content-of-political-conflict/81B3703230D21620B81EB6E2266C7A66). 
 
@@ -61,18 +64,32 @@ get_transcript <- function(id) {
 
 I could probably have scraped the unique IDs but I figured it'd take me less time to just manually type them out. I then passed each of those to our new get_transcript() function to get the full transcripts.
 
-```{r cache=TRUE}
+```{r eval=FALSE}
 
 speaker_ids <-  c(152086, 152087, 152106, 152089, 152103, 
                   152098, 152151, 152119, 152129,
                   152068, 152067, 152078, 152070,
                   152080, 152059, 152063, 152058, 152062)
 transcripts <- map_df(speaker_ids, get_transcript)
+
+transcripts
 ```
+
+```{r eval=FALSE, include=FALSE}
+save(transcripts, file = here::here("static", "data", "2019-07-25_transcripts.rds"))
+```
+
+
+```{r echo=FALSE}
+load(here::here("static", "data", "2019-07-25_transcripts.rds"))
+
+transcripts
+```
+
 
 ## Tokens
 
-Let's tokenize the transcripts and find the log-odds for each speaker. 
+Let's tokenize the transcripts and find the log-odds for each speaker. Luckily with `tidylo` it's as simple as calling `bind_log_odds` after counting words spoken by each coach. 
 
 ```{r}
 transcript_tokens <- transcripts %>% 
@@ -86,9 +103,9 @@ transcript_tokens <- transcripts %>%
 transcript_tokens
 ```
 
-Cool. Let's check this out in a plot. Based on [Tyler's](https://medium.com/@TSchnoebelen/i-dare-say-you-will-never-use-tf-idf-again-4918408b2310) suggestion we would typically filter for terms with log odds above 1.96 so we were confident they were unique to the coach. But we have such little text for each coach that I chose to just display significance with a dashed red line instead. 
+Cool. Let's check this out in a plot. Based on [Tyler's](https://medium.com/@TSchnoebelen/i-dare-say-you-will-never-use-tf-idf-again-4918408b2310) suggestion we would typically filter for terms with log odds above 1.96 so we were confident they were unique to the coach. But we have such little text for each coach that I chose to just display significance with a dashed red line instead. I'm also choosing to fill how many times the coach uttered a particular word to give a sense of frequency vs importance. 
 
-```{r}
+```{r fig.height=9}
 transcript_tokens %>% 
   group_by(speaker) %>% 
   slice(1:7) %>% 
@@ -112,7 +129,7 @@ I also chose to keep Bill Hancock (College Football Playoff Director), Greg Sank
 
 ## Bigrams
 
-I tend to find bigrams being a little better, so let's see how those go. 
+I tend to find bigrams being a little better, so let's see how those go with log odds. 
 
 I'm using a little trick to remove stop words by breaking up the bigram, removing any line that contains a stop word for either word, and then recombining the survivors. 
 
@@ -134,7 +151,7 @@ transcript_bigrams
 
 How do these look? 
 
-```{r}
+```{r fig.width=9, fig.height=9, fig.align='center'}
 transcript_bigrams %>% 
   group_by(speaker) %>%
   slice(1:7) %>% 
@@ -152,4 +169,6 @@ transcript_bigrams %>%
        title = "What are the most important bigrams for each coach?")
 ```
 
-Look, no one is surprised that Muschamp is REALLY passionate about his team. I can't even imagine the intensity he had every time he said it. Malzahn is still wanting to play fast. Saban wants to maintain consistency. Derek Mason is happy to have a player with a national profile. And of course Sankey has to refer to his free labor as "student-athletes." 
+Look, no one is surprised that Muschamp is REALLY passionate about his team. I can't even imagine the intensity he had every time he said it. Malzahn is still wanting to play fast. Saban is consistent as always. Derek Mason is happy to have a player with a national profile. And of course Sankey has to refer to his free labor as "student-athletes." 
+
+Overall not a bad way to quickly summarize what the coaches talk about. We all know you'll get about as much out of any basic text analysis of these coaches as actually watching a press conference these days. But maybe one day Lane Kiffin will come back to us and entertain us a little more. 

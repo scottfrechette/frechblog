@@ -1,5 +1,5 @@
 ---
-title: Presidential Debates
+title: First Two Democratic Debates
 author: Scott Frechette
 date: '2019-08-01'
 slug: presidential-debates
@@ -14,6 +14,10 @@ tags:
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
 ```
+
+Most Americans were smart enough to stay away from the two-night, four-hour marathon that was the second Democratic debate. I wasn't that smart, and like many others could use some help remembering what everyone talked about. 
+
+Seems like a perfect time to boot up the [tidylo](https://github.com/juliasilge/tidylo) package again and try out a few more tricks. 
 
 ## Setup
 
@@ -36,14 +40,14 @@ library(ggraph)
 
 set.seed(42)
 
-theme_set(theme_light())
+theme_set(tidyquant::theme_tq())
 ```
 
-#### Get Debate Data
+## Get Debate Data
 
-First thing we need to do is scrape the last debate. Washington Post has the transcripts posted so we'll borrow those. This gives us the first Democratic debate of 2020 and also lets us mess around with some historical data going back 60 years.  
+First thing we need to do is scrape the last debate. Washington Post has the transcripts posted so we'll borrow those.
 
-```{r}
+```{r eval=FALSE}
 night1 <- read_html("https://www.washingtonpost.com/politics/2019/07/31/transcript-first-night-second-democratic-debate/?utm_term=.679169e787bc") %>%
   html_nodes("p") %>%
   html_text() %>%
@@ -77,10 +81,12 @@ dem_2020_2 <- bind_rows(night1, night2) %>%
  
 ```
 
-Our old pal Tyler Schnoebelen* has gone through the effort to pull all the historical debates so why duplicate his effort? 
+Our old pal Tyler Schnoebelen* has gone through the effort to pull all the historical debates so why duplicate his effort? This gives us the first Democratic debate of 2020 and also lets us mess around with some historical data going back 60 years.  
 
-* Not actually real friends
-```{r}
+
+&ast; Not actually friends
+
+```{r eval=FALSE}
 debates <- read_csv("https://raw.githubusercontent.com/TylerSchnoebelen/US_debates/master/All_American_Presidential_and_VP_debates_since_Kennedy-Nixon-1960.csv") %>%
   clean_names() %>%
   select(-new_id) %>%
@@ -89,30 +95,48 @@ debates <- read_csv("https://raw.githubusercontent.com/TylerSchnoebelen/US_debat
          speaker = str_remove(speaker, "^[A-Z]* "),
          speaker = if_else(str_detect(speaker, "ROURKE"), "O'ROURKE", speaker)) %>%
   filter(text != "")
+
+debates
 ```
+
+```{r eval=FALSE, include=FALSE}
+save(debates, file = here::here("static", "data", "2019-08-01_debates.rds"))
+```
+
+
+```{r echo=FALSE}
+load(here::here("static", "data", "2019-08-01_debates.rds"))
+
+debates
+```
+
 
 ## Tokenize
 
-Now to tokenize these debates. I've gone ahead and created unigrams and bigram so we can play around with both. 
+Now to tokenize these debates. I've gone ahead and created unigrams and bigrams so we can play around with both. 
 
 ```{r}
 debates_unigrams <- debates %>%
-  filter(party %in% c("DEMOCRAT", "REPUBLICAN")) %>%
+  filter(party %in% c("DEMOCRAT", "REPUBLICAN"),
+         election_year == 2020,
+         str_detect(debate, "Jul")) %>%
   unnest_tokens(word, text)
 
 debates_bigrams <- debates %>%
-  filter(party %in% c("DEMOCRAT", "REPUBLICAN")) %>%
+  filter(party %in% c("DEMOCRAT", "REPUBLICAN"),
+         election_year == 2020,
+         str_detect(debate, "Jul")) %>%
   unnest_tokens(bigram, text, token = "ngrams", n = 2)
 ```
 
 ## Log Odds
 
-Just like last time we're going to use the [tidylo](https://github.com/juliasilge/tidylo) package to calculate the weighted log odds to figure out what tokens matter most for each of our candidates.
+Just like last time we're going to use the `tidylo` package to calculate the weighted log odds to figure out what tokens matter most for each of our candidates.
 
-Let's start with the unigrams. Now that we've seen these candidates twice let's see if we get a feel so what matters more to them this year. 
-```{r}
+Let's start with the unigrams. Now that we've seen these candidates twice let's see if we get a feel so what matters more to them this year. We'll filter for words that a candidate uttered at least three times and we're relatively confident are important for them.
+
+```{r fig.width=8, fig.height=8}
 debates_unigrams %>%
-  filter(election_year == 2020) %>%
   anti_join(stop_words, by = "word") %>%
   count(speaker, word) %>%
   bind_log_odds(speaker, word, n) %>%
@@ -130,13 +154,12 @@ debates_unigrams %>%
   facet_wrap(~ speaker, scales = "free_y", ncol = 4)
 ```
 
-What can we tell? Swalwell wanted Biden to pass the torch to the next generation. Biden spent a lot time defending Obamacare. Sanders is concerned about the fossil fuel industry. Gillibrand is fighting for women. Bullock is from Montana. Gabbard is concerned about Middle East conflicts. Ryan discussed alternative energy. 
+What can we tell? Biden is defending Obamacare. Bullock is from Montana and doesn't like Koch brothers. Gillibrand is worried about the deterioration of women. Warren wants to fight giants.  
 
 Frankly it's not that helpful. I still prefer bigrams so let's see if those do us any better. 
 
-```{r}
+```{r fig.width=10, fig.height=10}
 debates_bigrams %>%
-  filter(election_year == 2020) %>%
   separate(bigram, c("word1", "word2"), sep = " ") %>%
   filter(!word1 %in% stop_words$word,
          !word2 %in% stop_words$word) %>%
@@ -162,57 +185,7 @@ debates_bigrams %>%
 
 This looks a lot better. 
 
-In fact, let's compare it to [CNN's own analysis of the second debate with tidytext](https://www.cnn.com/interactive/2019/08/politics/democratic-debate-key-phrases/).
-
-```{r}
-debates_unigrams %>%
-  filter(election_year == 2020,
-         str_detect(debate, "Jul")) %>%
-  anti_join(stop_words, by = "word") %>%
-  count(speaker, word) %>%
-  bind_log_odds(speaker, word, n) %>%
-  filter(log_odds >= 1.96,
-         n >= 3) %>%
-  group_by(speaker) %>% 
-  slice(1:10) %>%
-  ungroup() %>% 
-  mutate(word = reorder_within(word, log_odds, speaker)) %>%
-  ggplot(aes(word, log_odds, fill = n)) +
-  geom_col() +
-  scale_x_reordered() +
-  scale_fill_viridis_c(guide = F) +
-  coord_flip() +
-  facet_wrap(~ speaker, scales = "free_y", ncol = 4)
-```
-
-```{r}
-debates_bigrams %>%
-  filter(election_year == 2020,
-         str_detect(debate, "Jul")) %>%
-  separate(bigram, c("word1", "word2"), sep = " ") %>%
-  filter(!word1 %in% stop_words$word,
-         !word2 %in% stop_words$word) %>%
-  unite(bigram, word1, word2, sep = " ") %>%
-  count(speaker, bigram) %>%
-  bind_log_odds(speaker, bigram, n) %>%
-  arrange(-log_odds) %>% 
-  filter(
-    log_odds >= 1.5,
-    # n >= 3
-    ) %>%
-  group_by(speaker) %>% 
-  slice(1:10) %>% 
-  ungroup() %>% 
-  mutate(bigram = reorder_within(bigram, log_odds, speaker)) %>%
-  ggplot(aes(bigram, log_odds, fill = n)) +
-  geom_col() +
-  scale_x_reordered() +
-  scale_fill_viridis_c(guide = F) +
-  coord_flip() +
-  facet_wrap(~ speaker, scales = "free_y", ncol = 4)
-```
-
-Which of CNN's key phrases identified with TF-IDF did we match? Let's compare their list to the top 10 unigrams and bigrams for each candidate by weighted log odds:
+In fact, let's compare it to [CNN's own analysis of the second debate with tidytext](https://www.cnn.com/interactive/2019/08/politics/democratic-debate-key-phrases/). Which of CNN's key phrases identified with TF-IDF did we match? Let's compare their list to the top 10 unigrams and bigrams for each candidate by weighted log odds:
 
 * Bennet: **universal healthcare**, **public option**, **divisive politics**
 * Biden: **deeply involved**, **fundamentally change**, **obamacare**, hyde amendment
@@ -239,13 +212,12 @@ I'd say that's pretty damn good. And let's note they didn't publish their code i
 
 ## UMAP
 
-Another technique I like a lot is called [UMAP](https://arxiv.org/abs/1802.03426). It's similar to PCA and t-SNE but I tend to think it works a little better.
+Another technique I like a lot is called [UMAP](https://arxiv.org/abs/1802.03426). It's a dimenstion reduction technique similar to PCA and t-SNE but I tend to think it works a little better. It's particularly helpful for visualizing high dimensional data. 
 
 First can we apply UMAP to the words used by candidates to plot candidates in space near their neighbors?
 
 ```{r}
 debates_unigrams_umap <- debates_unigrams %>%
-  filter(election_year == 2020) %>%
   count(speaker, word) %>%
   bind_log_odds(speaker, word, n) %>% 
   cast_sparse(speaker, word, log_odds) %>% 
@@ -263,9 +235,9 @@ debates_unigrams_umap$layout %>%
 
 To be honest I could probably squint hard and make out some patterns, but it looks generally random to my tiny human brain.
 
-So what about reversing that and visualizing the words in space instead? I'll remove stop words to help focus on key words. 
+So what about reversing that and visualizing the words in space instead? I'll remove stop words and only focus on top 200 words to help the visual. 
 
-```{r}
+```{r fig.width=12, fig.height=12}
 
 top_words <- debates_unigrams %>% 
   count(word, sort = T) %>% 
@@ -274,7 +246,6 @@ top_words <- debates_unigrams %>%
   top_n(200, n)
 
 debates_unigrams %>%
-  filter(election_year == 2020) %>% 
   inner_join(top_words, by = "word") %>% 
   count(speaker, word) %>% 
   cast_sparse(word, speaker, n) %>% 
@@ -289,13 +260,12 @@ debates_unigrams %>%
   geom_hline(yintercept = 0, linetype = 2)
 ```
 
-Looks like some good clusters in there we could use to help guide us in more unsupervised learning techniques like K-means clustering or topic modeling. 
+Looks like some decent clusters in there we could use to help guide us in more unsupervised learning techniques like K-means clustering or topic modeling. 
 
 Just for fun let's see what happens if I combine UMAP with our weighted log odds from above.
 
-```{r}
+```{r fig.width=12, fig.height=12}
 debates_unigrams %>%
-  filter(election_year == 2020) %>% 
   inner_join(top_words, by = "word") %>% 
   count(speaker, word) %>% 
   bind_log_odds(word, speaker, n) %>% 
@@ -311,7 +281,7 @@ debates_unigrams %>%
   geom_hline(yintercept = 0, linetype = 2)
 ```
 
-Looks even better and shows the flexibility and power of using weighted log odds for any bag of words analysis. 
+Looks a little bit better and shows the flexibility and power of using weighted log odds for any bag of words analysis. 
 
 ## Sentiment Analysis
 
@@ -323,7 +293,6 @@ First up is the Bing lexicon, which characterizes words as positive or negative.
 
 ```{r}
 debates_unigrams_bing <- debates_unigrams %>% 
-  filter(election_year == 2020) %>% 
   add_count(speaker, name = "words") %>% 
   inner_join(get_sentiments("bing"), by = "word") %>% 
   count(speaker, sentiment, words, name = "sentiment_score") %>%
@@ -350,7 +319,6 @@ What about trying out the AFINN lexicon? This goes a step further than Bing and 
 
 ```{r}
 debates_unigrams_afinn <- debates_unigrams %>% 
-  filter(election_year == 2020) %>% 
   add_count(speaker, name = "words") %>% 
   inner_join(get_sentiments("afinn"), by = "word") %>% 
   count(speaker, words, wt = value, name = "sentiment_score") %>% 
@@ -373,18 +341,21 @@ Swalwell and Gabbard are still negative but now Sanders has joined them. So mayb
 
 Finally let's check out the NRC lexicon. This categorizes words as positive/negative like Bing but also adds more categories for the eight basic emotions of anger, anticipation, disgust, fear, joy, sadness, surprise, and trust.
 
+I'm filtering out positive/negative emotions because it's similar to what we did above. 
+
 ```{r}
 debates_unigrams_nrc <- debates_unigrams %>% 
-  filter(election_year == 2020) %>% 
   add_count(speaker, name = "words") %>% 
   inner_join(get_sentiments("nrc"), by = "word") %>% 
+  filter(!sentiment %in% c("positive", "negative")) %>% 
   count(speaker, words, sentiment) %>% 
   mutate(score = n / words) %>% 
   arrange(-n)
 ```
 
 How do the candidates compare for each sentiment? 
-```{r}
+
+```{r fig.width=10, fig.height=10}
 debates_unigrams_nrc %>% 
   mutate(speaker_ordered = reorder_within(speaker, score, sentiment)) %>% 
   ggplot(aes(speaker_ordered, score, fill = score)) +
@@ -392,16 +363,16 @@ debates_unigrams_nrc %>%
   scale_x_reordered() +
   scale_y_continuous(labels = percent) + 
   coord_flip() + 
-  facet_wrap(~ sentiment, scales = "free") +
+  facet_wrap(~ sentiment, scales = "free_y") +
   guides(fill = F) +
   scale_fill_viridis_c()
 ```
 
-Positive/negative sentiments look similar to our Bing analysis above. Now we can actually see that Swalwell scored highest in fear and sadness whereas Gabbard scored highest in disgust. Meanwhile Inslee displayed a lot of joy and trust 
+Now we can actually see that Swalwell scored highest in fear and sadness whereas Gabbard scored highest in disgust. Meanwhile Inslee displayed a lot of joy and trust 
 
 What if we transformed these scores into sentiment radar charts for our candidates? We'll scale each sentiment so we can truly assess each candidate against the others. 
 
-```{r}
+```{r fig.width=8, fig.height=8}
 debates_unigrams_nrc %>% 
   select(-n, -words) %>% 
   spread(sentiment, score) %>%
@@ -416,13 +387,15 @@ debates_unigrams_nrc %>%
   theme(axis.title = element_blank())
 ```
 
-Not too bad considering we didn't adjust for valence shifters (negations, intensifiers, or diminishers). 
+Not too bad considering we didn't adjust for valence shifters (negations, intensifiers, or diminishers). Based on this maybe we should pay attention what Inslee has to say more and stay away from Gabbard and Buttigieg. 
+
+Though really we know this is bullshit because it thinks the jewel herself, Marianne Williamson, is the angriest person onstage. 
 
 ## Pairwise Correlation
 
-Let's try one more technique and see how it works out. Let's see if we can find decent clusters by identifying which words are highly correlated with each other. For this I'll go ahead and lemmatize the words
+Let's try one more technique and see how it works out. Let's see if we can find decent clusters by identifying which words are highly correlated with each other. For this I'll go ahead and include words from all 2020 debates and lemmatize the words to reduce the dimensionality. 
 
-```{r}
+```{r fig.width=12, fig.height=12}
 debates_unigrams_2020 <- debates %>%
   filter(election_year == 2020,
          party == "DEMOCRAT") %>% 
@@ -438,7 +411,7 @@ debates_unigrams_cor <- debates_unigrams_2020 %>%
   pairwise_cor(lemma, response, n)
 
 debates_unigrams_cor_filtered <- debates_unigrams_cor %>% 
-  filter(correlation >= 0.4)
+  filter(correlation >= 0.35)
 
 debates_unigrams_2020_count <- debates_unigrams_2020 %>% 
   filter(lemma %in% 
@@ -457,254 +430,10 @@ debates_unigrams_cor_filtered %>%
   guides(size = FALSE)
 ```
 
+Most of this looks pretty reasonable, except it's a rough look that Eric Garner is connected to dominating the solar market. 
+
 ## Conclusion
-```{r eval=FALSE, include=FALSE}
-## Tidy Kmeans
-#See <https://cran.r-project.org/web/packages/broom/vignettes/kmeans.html>
-library(furrr)
-plan(multiprocess)
 
-kclusts <- tibble(k = 1:20) %>%
-  mutate(
-    kclust = map(k, ~ kmeans(debates_unigrams_sparse, .x)),
-    tidied = map(kclust, tidy),
-    glanced = map(kclust, glance),
-    augmented = map(kclust, augment, debates_unigrams_sparse %>%
-                      as.matrix() %>%
-                      as_tibble() %>% 
-                      select(200)),
-    wss = map_dbl(glanced, "tot.withinss")
-  )
+My goal was to push `tidylo` package a little bit further to see what all we can do with it as well as try out some of the other techniques raised by Julia Silge and David Robinson in their book [Tidy Text Mining](https://www.tidytextmining.com/).
 
-kclusts
-```
-
-```{r eval=FALSE, include=FALSE}
-clusters <- kclusts %>%
-  unnest(tidied)
-
-assignments <- kclusts %>% 
-  unnest(augmented)
-
-clusterings <- kclusts %>%
-  unnest(glanced, .drop = TRUE)
-```
-
-```{r eval=FALSE, include=FALSE}
-#view assignments
-ggplot(assignments, aes(x1, x2)) +
-  geom_point(aes(color = .cluster)) + 
-  facet_wrap(~ k)
-```
-
-```{r eval=FALSE, include=FALSE}
-#elbow plot
-ggplot(kclusts, aes(k, wss)) +
-  geom_line() + 
-  geom_point()
-```
-
-
-```{r eval=FALSE, include=FALSE}
-## Topic Modeling
-
-debates_unigrams_lda <- debates_unigrams %>%
-  filter(election_year == 2020) %>%
-  # filter(str_detect(word, "^[A-Za-z]")) %>% 
-  anti_join(stop_words, by = "word") %>%
-  count(speaker, word) %>% 
-  cast_dtm(speaker, word, n) %>% 
-  LDA(7, control = list(seed = 42))
-
-debate_topics <- tidy(debates_unigrams_lda)
-
-debate_topics %>%
-  group_by(topic) %>%
-  top_n(10, beta) %>%
-  ungroup() %>%
-  arrange(topic, -beta)  %>%
-  mutate(term = reorder(term, beta)) %>%
-  ggplot(aes(term, beta, fill = factor(topic))) +
-  geom_col(show.legend = FALSE) +
-  facet_wrap(~ topic, scales = "free") +
-  coord_flip()
-```
-
-```{r eval=FALSE, include=FALSE}
-beta_spread <- debate_topics %>%
-  mutate(topic = paste0("topic", topic)) %>%
-  spread(topic, beta) %>%
-  filter(topic1 > .001 | topic2 > .001) %>%
-  mutate(log_ratio = log2(topic2 / topic1)) %>% 
-  arrange(log_ratio)
-
-beta_spread
-```
-
-```{r eval=FALSE, include=FALSE}
-beta_spread %>% 
-  gather(topic, value, contains("topic")) %>%
-  group_by(term) %>% 
-  top_n(1, wt = value) %>% 
-  ungroup() %>% 
-  mutate(term = reorder_within(term, value, topic)) %>% 
-  select(-log_ratio) %>% 
-  group_by(topic) %>%
-  top_n(10, wt = value) %>%
-  ungroup() %>% 
-  ggplot(aes(term, value)) + 
-  geom_col() + 
-  facet_wrap(~ topic, scales = "free_y") + 
-  coord_flip() + 
-  scale_x_reordered()
-```
-
-
-```{r eval=FALSE, include=FALSE}
-## UDPipe
-
-debates_filtered <- debates %>% 
-  filter(election_year == 2020)
-
-debates_ud <- udpipe_annotate(ud_model, debates_filtered$text, 
-                              doc_id = debates_filtered$speaker,
-                              trace = TRUE) %>% 
-  as_tibble()
-```
-
-```{r eval=FALSE, include=FALSE}
-debates_unigramsrank <- textrank_keywords(debates_ud$lemma, 
-                                      relevant = debates_ud$upos %in% c("NOUN", "ADJ"), 
-                                      ngram_max = 8, sep = " ") %>% 
-  .$keywords %>% 
-  as_tibble() %>% 
-  filter(ngram > 1 & freq >= 5) %>% 
-  arrange(-freq)
-
-debates_unigramsrank %>% 
-  mutate(x = str_count(keyword, " ") + 1) %>% 
-  separate(keyword, c("word1", "word2", "word3"), sep = " ",
-           extra = "drop", fill = "right") %>%
-  filter(!word1 %in% stop_words$word,
-         !word2 %in% stop_words$word,
-         !word3 %in% stop_words$word) %>%
-  unite(keyword, word1, word2, word3, sep = " ") %>% 
-  mutate(keyword = str_remove(keyword, "NA") %>% 
-           str_trim) %>% 
-  head(50) %>%
-  ggplot(aes(reorder(keyword, freq), freq)) + 
-  geom_point() +
-  coord_flip() + 
-  labs(x = "Phrase", y = "Frequency",
-       title = "What are the top phrases as determined by Textrank?",
-       subtitle = "Textrank: Word network ordered by Google Pagerank")
-```
-
-```{r eval=FALSE, include=FALSE}
-debates_rake <- keywords_rake(x = debates_ud, 
-                              term = "token", group = c("doc_id", "paragraph_id", "sentence_id"),
-                              relevant = debates_ud$upos %in% c("NOUN", "ADJ"),
-                              ngram_max = 4) %>% 
-  as_tibble()
-
-debates_rake %>% 
-  filter(freq > 3) %>% 
-  head(50) %>%
-  ggplot(aes(reorder(keyword, rake), rake)) + 
-  geom_point() +
-  coord_flip() + 
-  labs(x = "Phrase", y = "RAKE Score",
-       title = "What are the top phrases as determined by RAKE?",
-       subtitle = "RAKE: Rapid Automatic Keyword Extraction")
-```
-
-```{r eval=FALSE, include=FALSE}
-debates_pmi <- debates_ud %>% 
-  mutate(word = tolower(token)) %>% 
-  keywords_collocation(term = "word", group = "doc_id") %>% 
-  as_tibble() %>% 
-  filter(!left %in% stop_words$word, 
-         !right %in% stop_words$word, 
-         !str_detect(keyword, "[:punct:]")) %>% 
-  arrange(-lfmd)
-```
-
-```{r eval=FALSE, include=FALSE}
-debates_ud$term <- txt_recode_ngram(debates_ud$token, 
-                                    compound = debates_rake$keyword, 
-                                    ngram = debates_rake$ngram)
-
-debates_ud %>% 
-  filter(upos %in% c("NOUN", "ADJ") | !is.na(term)) %>% 
-  mutate(term = if_else(is.na(term), token, term) %>% 
-           tolower) %>% 
-  filter(upos %in% c("NOUN", "ADJ") | str_count(term, " ") > 0)
-```
-
-```{r eval=FALSE, include=FALSE}
-debates_ud_nounadj <- debates_ud %>% filter(upos %in% c("NOUN", "ADJ"))
-debates_nounadj_rake <- keywords_rake(x = debates_ud_nounadj, 
-                                      term = "token", group = c("doc_id", "paragraph_id", "sentence_id"),
-                                      ngram_max = 4) %>% 
-  as_tibble()
-debates_ud_nounadj$term <- txt_recode_ngram(debates_ud_nounadj$token, 
-                           compound = debates_nounadj_rake$keyword, 
-                           ngram = debates_nounadj_rake$ngram)
-```
-
-```{r eval=FALSE, include=FALSE}
-debates_ud_cnt <- debates_ud %>% 
-  filter(upos %in% c("NOUN", "ADJ"),
-         !str_detect(lemma, "\\W")) %>%
-  count(doc_id, lemma)
-
-debates_ud_cnt_filtered <- debates_ud_cnt %>% 
-  filter(n >= 5)
-
-debates_ud_cor <- debates_ud_cnt %>%
-  pairwise_cor(lemma, doc_id, n) %>% 
-  filter(correlation > 0.75,
-         item1 %in% debates_ud_cnt_filtered$lemma,
-         item2 %in% debates_ud_cnt_filtered$lemma) %>% 
-  arrange(-correlation)
-
-debates_ud_cor_count <- debates_ud_cnt %>% 
-  filter(lemma %in% 
-           debates_ud_cor$item1) %>%
-  distinct(lemma, n)
-
-debates_ud_cor %>%
-  graph_from_data_frame() %>%
-  ggraph(layout = "fr") +
-  geom_edge_link(aes(edge_alpha = correlation), show.legend = FALSE) +
-  geom_node_point(size = 5,
-                  color = "lightblue") + 
-  geom_node_text(aes(label = name), repel = TRUE) +
-  theme_void() + 
-  guides(size = FALSE)
-```
-
-```{r eval=FALSE, include=FALSE}
-debates_skipgram <- cooccurrence(x = debates_ud$lemma, 
-                                 relevant = debates_ud$upos %in% c("NOUN", "ADJ"), 
-                                 skipgram = 2) %>% 
-  as_tibble()
-
-debates_proximity <- cooccurrence(x = debates_ud$lemma, 
-                     relevant = debates_ud$upos %in% c("NOUN", "ADJ")) %>% 
-  as_tibble()
-
-debates_proximity %>%
-  top_n(100, cooc) %>% 
-  graph_from_data_frame() %>%
-  ggraph(layout = "fr") +
-  geom_edge_link(aes(width = cooc, edge_alpha = cooc)) +
-  geom_node_point(size = 5,
-                  color = "lightblue") + 
-  geom_node_text(aes(label = name), size = 4, repel = TRUE) +
-  theme_void() + 
-  labs(title = "Cooccurrences within 3 words distance", 
-       subtitle = "Nouns & Adjective")
-```
-
-
+It'll be even better when I can just run future debates through this type of analysis and skip out on watching it entirely. 
