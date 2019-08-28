@@ -1,10 +1,10 @@
-baseurl = "https://scottfrechette.com/"
-title = "Frech Takes"
+baseurl = "https://example.com/"
+title = "Ghostwriter example"
 theme = "ghostwriter"
 languageCode = "en-us"
-copyright = "Scott Frechette"
-disqusShortname = ""
-googleAnalytics = ""
+copyright = "My Name"
+disqusShortname = "XXX"
+googleAnalytics = "XXX"
 
 [Privacy]
 
@@ -17,8 +17,8 @@ googleAnalytics = ""
     useSessionStorage = false
 
 [Author]
-    name = "Scott Frechette"
-    profile = "https://frechtakes.netlify.com/about"
+    name = "My Name"
+    profile = "https://google.com/+XXX"
 
 [Taxonomies]
     tag = "tags"
@@ -28,11 +28,11 @@ googleAnalytics = ""
     intro = true
     headline = "Ghostwriter example"
     description = "Ghostwriter example description"
-    github = "https://github.com/XXX"
+    github = "https://github.com/scottfrechette"
     gitlab = "https://gitlab.com/XXX"
     linkedin = "https://linkedin.com/in/XXX/"
     gplus = "https://google.com/+XXX"
-    twitter = "https://twitter.com/XXX"
+    twitter = "https://twitter.com/scottfrechette"
     stackoverflow = "https://stackoverflow.com/users/XXX/YYY"
     facebook = "https://www.facebook.com/username"
     email = "XXX@example.com"
@@ -51,15 +51,25 @@ googleAnalytics = ""
     readingTime = true
     readingTimeText = "Estimated reading time:"
 
-[permalinks]
-    post = "/:year/:month/:day/:slug/"
+[Permalinks]
+    post = "/:year/:month/:day/:filename/"
+
+[[menu.main]]
+    name = "Blog"
+    url = "/"
+    weight = 1
+
+[[menu.main]]
+    name = "Projects"
+    url = "/project/"
+    weight = 2
+
+[[menu.main]]
+    name = "Contact"
+    url = "/page/contact/"
+    weight = 3
 
 [[menu.main]]
     name = "About"
-    url = "/about/"
-[[menu.main]]
-    name = "GitHub"
-    url = "https://github.com/scottfrechette"
-[[menu.main]]
-    name = "Twitter"
-    url = "https://twitter.com/scottfrechette"
+    url = "/page/about/"
+    weight = 4
