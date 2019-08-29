@@ -1,0 +1,362 @@
+---
+title: Who's the Best Sesame Street Character?
+author: Scott Frechette
+date: '2019-08-25'
+categories:
+  - pop culture
+tags:
+  - R
+  - pop culture
+  - media
+  - TV
+  - text
+slug: who-s-the-best-sesame-street-character
+---
+
+
+
+<p>Part of having a toddler is trying to share things I enjoyed as a kid with her. We’ve also been trying to find ways to buy ourselves 15 minutes here and there so what could be better than putting Sesame Street on? She wasn’t into it at first but has started warming up and asking for “Elmo”, so I guess he’s still popular.</p>
+<p>As we were watching some of the newer episodes I was shocked how many new characters there were. I kept waiting to see Bert &amp; Ernie show up or Snuffy to lumber through the screen. I really felt like Elmo and Abby were dominating the screen time.</p>
+<p>My wife told me I was crazy so obviously here I am. Let’s find out for sure who’s stealing the limelight these days.</p>
+<div id="setup" class="section level2">
+<h2>Setup</h2>
+<p>Let’s get it going. First load up the packages we need.</p>
+<pre class="r"><code>library(tidyverse)
+library(rvest)
+library(janitor)
+library(lubridate)
+library(furrr)
+library(scales)
+library(tidytext)
+library(tidylo)
+
+theme_set(tidyquant::theme_tq())
+
+plan(multiprocess)</code></pre>
+</div>
+<div id="get-episode-details" class="section level2">
+<h2>Get Episode Details</h2>
+<p>Luckily there’s a huge fandom around muppets so there’s an entire wiki with details from every episode. First we’ll build a helper function to scrape details for a given episode. We want to make sure to include the overall details like air date and title as well as the different scenes.</p>
+<pre class="r"><code>get_ep_details &lt;- function(ep) {
+  
+  tables &lt;- read_html(str_glue(&quot;https://muppet.fandom.com/wiki/Episode_{ep}&quot;)) %&gt;% 
+    html_table()
+  
+  ep_summary &lt;- tables[[1]] %&gt;% 
+    spread(X1, X2) %&gt;% 
+    as_tibble() %&gt;% 
+    clean_names() %&gt;% 
+    select(air_date, title = plot) %&gt;%
+    mutate(air_date = str_extract(air_date, &quot;^[^\\(]+&quot;) %&gt;% 
+             mdy())
+  
+  ep_scenes &lt;- tables[[2]] %&gt;% 
+    as_tibble() %&gt;% 
+    select(-Picture) %&gt;% 
+    clean_names()
+  
+  cbind(ep_summary, ep_scenes) %&gt;% 
+    as_tibble()
+}</code></pre>
+<p>Before we run through every episode lets make sure it works on a single episode.</p>
+<pre class="r"><code>get_ep_details(1000)</code></pre>
+<pre><code>## # A tibble: 40 x 4
+##    air_date   title       segment description                              
+##    &lt;date&gt;     &lt;chr&gt;       &lt;chr&gt;   &lt;chr&gt;                                    
+##  1 1977-03-11 Bob finds ~ SCENE 1 The Count has gotten up very early to co~
+##  2 1977-03-11 Bob finds ~ Muppets &quot;Five Anything Muppets sing the \&quot;Numeri~
+##  3 1977-03-11 Bob finds ~ Cartoon A boy gets lost, and encounters a man wi~
+##  4 1977-03-11 Bob finds ~ Muppets Ernie &amp; Bert — Ernie tells Bert that he ~
+##  5 1977-03-11 Bob finds ~ Cartoon &quot;\&quot;I Can Remember\&quot;: A little girl remem~
+##  6 1977-03-11 Bob finds ~ Song    &quot;Marilyn Sokol sings \&quot;Pockets\&quot; over a ~
+##  7 1977-03-11 Bob finds ~ Cartoon Two circles demonstrate next to and away~
+##  8 1977-03-11 Bob finds ~ SCENE 2 Olivia is taking new ID photos for Bob. ~
+##  9 1977-03-11 Bob finds ~ Cartoon &quot;A girl imagines being next to a tree, a~
+## 10 1977-03-11 Bob finds ~ Muppets Super Grover tries to stop a fight betwe~
+## # ... with 30 more rows</code></pre>
+<p>Perfect, so let’s run through every episode. They’re up in the 4900s so let’s give it a buffer so this code can run into the future as well. We’ll also be doing two things to make this run better:</p>
+<ol style="list-style-type: decimal">
+<li>Using the <code>future_map()</code> function from the <code>furrr</code> package to use parallel processing of our <code>map</code> function</li>
+<li>Wrap the <code>get_ep_details()</code> function in <code>purrr::safely()</code> because not every episode number has details on the wiki</li>
+</ol>
+<pre class="r"><code>ep_details &lt;- tibble(ep = 1:5000) %&gt;%
+  mutate(ep = str_pad(ep, 4, pad = &quot;0&quot;),
+         deets = future_map(ep, safely(get_ep_details))) %&gt;%
+  unnest() %&gt;%
+  mutate(true_deets = future_map_lgl(deets, is_tibble)) %&gt;%
+  filter(true_deets) %&gt;%
+  select(-true_deets) %&gt;%
+  unnest() %&gt;%
+  drop_na(air_date) %&gt;% 
+  mutate(segment = coalesce(segment, scene),
+         ep = as.numeric(ep)) %&gt;%
+  select(ep, air_date, title, segment, description)
+
+ep_details</code></pre>
+<pre><code>## # A tibble: 100,463 x 5
+##       ep air_date   title            segment description                   
+##    &lt;dbl&gt; &lt;date&gt;     &lt;chr&gt;            &lt;chr&gt;   &lt;chr&gt;                         
+##  1     1 1969-11-10 Gordon introduc~ SCENE 1 &quot;\&quot;Sally, you&#39;ve never seen a~
+##  2     1 1969-11-10 Gordon introduc~ Muppets Ernie &amp; Bert — Ernie tells Be~
+##  3     1 1969-11-10 Gordon introduc~ Cartoon &quot;Poor Solomon Grundy washes a~
+##  4     1 1969-11-10 Gordon introduc~ Film    &quot;You can clean almost anythin~
+##  5     1 1969-11-10 Gordon introduc~ Song    &quot;Ernie leads the cast in \&quot;Ev~
+##  6     1 1969-11-10 Gordon introduc~ Cartoon Dot Bridge #1                 
+##  7     1 1969-11-10 Gordon introduc~ Film    &quot;\&quot;Three Song (Song of Three)~
+##  8     1 1969-11-10 Gordon introduc~ SCENE 2 Sally drinks milk and eats co~
+##  9     1 1969-11-10 Gordon introduc~ Film    &quot;How milk is made, featuring ~
+## 10     1 1969-11-10 Gordon introduc~ Cartoon Dot Bridge #1 (repeat)        
+## # ... with 100,453 more rows</code></pre>
+<p>Looks good, but which episode numbers do we actually have data for?</p>
+<pre class="r"><code>ep_details %&gt;% 
+  distinct(ep, air_date) %&gt;%
+  mutate(d = floor_date(air_date, &quot;month&quot;)) %&gt;%
+  ggplot(aes(ep)) + 
+  geom_bar()</code></pre>
+<p><img src="/post/2019-08-25-who-s-the-best-sesame-street-character_files/figure-html/unnamed-chunk-7-1.png" width="672" /></p>
+<p>It looks like a lot of white space where we would expect episodes if they were numbered continuously, but first two numbers denote the season so it just means they had less episodes a season earlier on.</p>
+<p>So how many episodes are we working with?</p>
+<pre class="r"><code>n_distinct(ep_details$ep)</code></pre>
+<pre><code>## [1] 2929</code></pre>
+</div>
+<div id="sesame-street-characters" class="section level2">
+<h2>Sesame Street Characters</h2>
+<p>The wiki also has a list of every single character that’s been on Sesame Street so let’s go ahead and grab those too.</p>
+<pre class="r"><code>get_characters &lt;- function(letter) {
+  
+  read_html(str_glue(&quot;https://muppet.fandom.com/wiki/Category:Sesame_Street_Characters?from={letter}&quot;)) %&gt;% 
+    html_nodes(&quot;.category-page__members li a&quot;) %&gt;% 
+    html_text() %&gt;% 
+    enframe(name = NULL) %&gt;% 
+    rename(name = value)
+  
+}</code></pre>
+<p>For this we can just directly pass the built-in vector <code>letters</code> as well as <code>#</code> for any character that starts with a number.</p>
+<pre class="r"><code>all_characters &lt;- map_df(c(&quot;#&quot;, letters), get_characters) %&gt;%
+  distinct()
+
+all_characters</code></pre>
+<pre><code>## # A tibble: 1,733 x 1
+##    name                                           
+##    &lt;chr&gt;                                          
+##  1 2102 Shady Lane                                
+##  2 2104 Shady Lane                                
+##  3 A. B. C-more                                   
+##  4 A. B. Cito                                     
+##  5 Abby Cadabby                                   
+##  6 Abby Cadabby (animated)                        
+##  7 Abby Cadabby&#39;s father                          
+##  8 ABCDEFGHIJKLMNOPQRSTUVWXYZ Company Delivery Man
+##  9 Abigail Snuffleupagus                          
+## 10 Adam T. Glaser                                 
+## # ... with 1,723 more rows</code></pre>
+<p>That’s way too many characters to deal with, so on second thought let’s just check out the characters I can easily think of for now. I didn’t grow up with Abby, Zoe, and Rosita but I’ve obviously seen them a decent amount in the newer episodes so I’ll add them in.</p>
+<pre class="r"><code>char_list &lt;- c(&quot;Big Bird&quot;, &quot;Snuff&quot;, &quot;Elmo&quot;, &quot;Bert&quot;, &quot;Ernie&quot;, &quot;Cookie Monster&quot;, &quot;Count&quot;, 
+               &quot;Oscar&quot;, &quot;Grouch&quot;, &quot;Grover&quot;, &quot;Abby&quot;, &quot;Zoe&quot;, &quot;Rosita&quot;)</code></pre>
+<div id="character-segments" class="section level4">
+<h4>Character Segments</h4>
+<p>First let’s see which segments each of our characters are in.</p>
+<pre class="r"><code>char_segment_count &lt;- ep_details %&gt;% 
+  mutate(character = str_extract_all(description,
+                                 paste(char_list, collapse = &quot;|&quot;))) %&gt;% 
+  unnest() %&gt;% 
+  mutate(character = case_when(
+    str_detect(character, &quot;Oscar|Grouch&quot;) ~ &quot;Oscar the Grouch&quot;,
+    str_detect(character, &quot;Snuff&quot;) ~ &quot;Snuffy&quot;,
+    is.na(character) ~ &quot;Other&quot;,
+    TRUE ~ character)) %&gt;% 
+  distinct(ep, air_date, segment, character) %&gt;% 
+  group_by(ep) %&gt;% 
+  mutate(ep_segments = n_distinct(segment)) %&gt;% 
+  ungroup() %&gt;% 
+  count(ep, air_date, ep_segments, character, 
+        name = &quot;char_segments&quot;) %&gt;% 
+  add_count(character, wt = char_segments, name = &quot;char_total_segments&quot;) %&gt;% 
+  mutate(character = fct_reorder(character, -char_total_segments),
+         air_year = year(air_date))
+
+char_segment_count</code></pre>
+<pre><code>## # A tibble: 17,328 x 7
+##       ep air_date   ep_segments character char_segments char_total_segm~
+##    &lt;dbl&gt; &lt;date&gt;           &lt;int&gt; &lt;fct&gt;             &lt;int&gt;            &lt;int&gt;
+##  1     1 1969-11-10           7 Bert                  3             2191
+##  2     1 1969-11-10           7 Big Bird              1             6195
+##  3     1 1969-11-10           7 Cookie M~             1             1801
+##  4     1 1969-11-10           7 Ernie                 6             2562
+##  5     1 1969-11-10           7 Oscar th~             1             3566
+##  6     2 1969-11-11          10 Bert                  2             2191
+##  7     2 1969-11-11          10 Count                 1             2435
+##  8     2 1969-11-11          10 Ernie                 2             2562
+##  9     2 1969-11-11          10 Oscar th~             7             3566
+## 10     3 1969-11-12           8 Bert                  1             2191
+## # ... with 17,318 more rows, and 1 more variable: air_year &lt;dbl&gt;</code></pre>
+<p>It looks like the familiar names were used a lot in the beginning, but let’s check their actual usage over time.</p>
+<pre class="r"><code>char_segment_count %&gt;% 
+  count(air_year, character, wt = char_segments, name = &quot;char_yr_segments&quot;) %&gt;%
+  filter(character != &quot;Other&quot;) %&gt;% 
+  left_join(char_segment_count %&gt;%
+              distinct(ep, air_year, ep_segments) %&gt;% 
+              count(air_year, wt = ep_segments, name = &quot;annual_segments&quot;),
+            by = &quot;air_year&quot;) %&gt;% 
+  mutate(annual_count = char_yr_segments / annual_segments) %&gt;% 
+  ggplot(aes(air_year, annual_count, color = character)) + 
+  geom_line() + 
+  scale_y_continuous(labels = percent) +
+  facet_wrap(~ character) + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  guides(color = FALSE) + 
+  labs(x = &quot;Year&quot;, y = &quot;Usage Rate&quot;, 
+       title = &quot;What&#39;s the usage rate of each of our friends over time?&quot;,
+       subtitle = &quot;Percentage of scenes each year&quot;)</code></pre>
+<p><img src="/post/2019-08-25-who-s-the-best-sesame-street-character_files/figure-html/unnamed-chunk-15-1.png" width="672" /></p>
+<p>We can definitely see the rise of Elmo starting in the 90s and really taking over in mid-2000s, and looks like that was all at the expense of Big Bird. What really stands out to me personally is that Bert &amp; Ernie are used way less than what I remember.</p>
+</div>
+<div id="character-episodes" class="section level3">
+<h3>Character Episodes</h3>
+<p>It also looks like some of our friends get the marquee treatment with the episode title. Let’s do a similar analysis but this time limit ourselves to just the title of the episode.</p>
+<pre class="r"><code>char_ep_count &lt;- ep_details %&gt;% 
+  mutate(character = str_extract_all(title,
+                                 paste(char_list, collapse = &quot;|&quot;))) %&gt;% 
+  unnest() %&gt;% 
+  mutate(character = case_when(
+    str_detect(character, &quot;Oscar|Grouch&quot;) ~ &quot;Oscar the Grouch&quot;,
+    str_detect(character, &quot;Snuff&quot;) ~ &quot;Snuffy&quot;,
+    is.na(character) ~ &quot;Other&quot;,
+    TRUE ~ character)) %&gt;% 
+  distinct(ep, air_date, title, character) %&gt;%
+  count(ep, air_date, character, sort = T) %&gt;% 
+  add_count(character, wt = n, name = &quot;char_eps&quot;) %&gt;% 
+  mutate(character = fct_reorder(character, -char_eps),
+         air_year = year(air_date))
+
+char_ep_count %&gt;% 
+  filter(character != &quot;Other&quot;) %&gt;%
+  count(air_year, character, wt = n) %&gt;% 
+  complete(air_year, character, fill = list(n = 0)) %&gt;%
+  group_by(character) %&gt;% 
+  filter(cumsum(n) &gt; 0) %&gt;% 
+  ungroup() %&gt;% 
+  add_count(air_year, wt = n, name = &quot;annual&quot;) %&gt;% 
+  mutate(annual_count = n / annual) %&gt;% 
+  ggplot(aes(air_year, annual_count, color = character)) + 
+  geom_line() + 
+  scale_y_continuous(labels = percent) +
+  facet_wrap(~ character) + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  guides(color = FALSE) + 
+  labs(x = &quot;Year&quot;, y = &quot;Usage Rate&quot;, 
+       title = &quot;Which characters get the most episodes about them?&quot;,
+       subtitle = &quot;Percentage of titles containing their name&quot;)</code></pre>
+<p><img src="/post/2019-08-25-who-s-the-best-sesame-street-character_files/figure-html/unnamed-chunk-16-1.png" width="672" /></p>
+<p>It’s interesting to me that Elmo still hasn’t taken over Oscar the Grouch in episode titles even though he’s featured in so many segments now.</p>
+</div>
+<div id="all-characters" class="section level3">
+<h3>All Characters</h3>
+<p>Just for fun let’s circle back to that list of every character we pulled. How do the characters I name-dropped compare to the top characters of all time?</p>
+<pre class="r"><code>char_all_segment_count &lt;- ep_details %&gt;% 
+  mutate(character = str_extract_all(description,
+                                     paste(all_characters$name, collapse = &quot;|&quot;))) %&gt;% 
+  unnest() %&gt;% 
+  mutate(character = case_when(
+    str_detect(character, &quot;Oscar|Grouch&quot;) ~ &quot;Oscar the Grouch&quot;,
+    str_detect(character, &quot;Snuffy&quot;) ~ &quot;Snuffleupagus&quot;,
+    TRUE ~ character)) %&gt;% 
+  distinct(ep, air_date, segment, character) %&gt;% 
+  group_by(ep) %&gt;% 
+  mutate(ep_segments = n_distinct(segment)) %&gt;% 
+  ungroup() %&gt;% 
+  count(ep, air_date, ep_segments, character, 
+        name = &quot;char_segments&quot;, sort = T) %&gt;% 
+  add_count(character, wt = char_segments, name = &quot;char_total_segments&quot;) %&gt;% 
+  mutate(character = fct_reorder(character, -char_total_segments),
+         air_year = year(air_date))</code></pre>
+<pre><code>## # A tibble: 50,417 x 7
+##       ep air_date   ep_segments character char_segments char_total_segm~
+##    &lt;dbl&gt; &lt;date&gt;           &lt;int&gt; &lt;fct&gt;             &lt;int&gt;            &lt;int&gt;
+##  1  4327 2012-11-09          25 Big Bird             22             6131
+##  2  3803 1998-12-30          14 Big Bird             13             6131
+##  3  3851 2000-01-03          19 Elmo                 13             3541
+##  4     2 1969-11-11          19 Gordon               12             2848
+##  5     6 1969-11-17          16 Gordon               12             2848
+##  6     9 1969-11-20          18 Gordon               12             2848
+##  7  2824 1991-02-28          17 Elmo                 12             3541
+##  8  3046 1993-01-04          18 Elmo                 12             3541
+##  9  3788 1998-11-18          15 Elmo                 12             3541
+## 10  3912 2000-05-09          15 Elmo                 12             3541
+## # ... with 50,407 more rows, and 1 more variable: air_year &lt;dbl&gt;</code></pre>
+<pre class="r"><code>char_all_segment_count %&gt;% 
+  count(air_year, character, wt = char_segments, 
+        name = &quot;char_yr_segments&quot;) %&gt;%
+  inner_join(char_all_segment_count %&gt;% 
+               count(character, wt = char_segments) %&gt;% 
+               top_n(25, wt = n) %&gt;% 
+               distinct(character),
+             by = &quot;character&quot;) %&gt;%
+  add_count(air_year, wt = char_yr_segments, name = &quot;annual&quot;) %&gt;% 
+  mutate(annual_pct = char_yr_segments / annual) %&gt;% 
+  ggplot(aes(air_year, annual_pct, color = character)) + 
+  geom_line() + 
+  scale_y_continuous(labels = percent) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  facet_wrap(~ character) + 
+  guides(color = FALSE) + 
+  labs(x = &quot;Year&quot;, y = &quot;Usage Rate&quot;, 
+       title = &quot;What&#39;s the usage rate of each of our friends over time?&quot;,
+       subtitle = &quot;Percentage of scenes each year&quot;)</code></pre>
+<p><img src="/post/2019-08-25-who-s-the-best-sesame-street-character_files/figure-html/unnamed-chunk-20-1.png" width="768" /></p>
+<p>Not too shabby. We also see a lot of the humans like Maria, Al, Gordon, etc. showing up in here. I’m surprised to see Baby Bear up there, and I guess it makes sense Two-Headed Monster snuck in there by looming in the background a good amount.</p>
+</div>
+</div>
+<div id="description-analysis" class="section level2">
+<h2>Description Analysis</h2>
+<p>Let’s finish up with a quick little text analysis of the descriptions.</p>
+<pre class="r"><code>ep_tokens &lt;- ep_details %&gt;% 
+  unnest_tokens(word, description)
+
+ep_tokens</code></pre>
+<pre><code>## # A tibble: 2,388,730 x 5
+##       ep air_date   title                                 segment word     
+##    &lt;dbl&gt; &lt;date&gt;     &lt;chr&gt;                                 &lt;chr&gt;   &lt;chr&gt;    
+##  1     1 1969-11-10 Gordon introduces Sally to Sesame St~ SCENE 1 sally    
+##  2     1 1969-11-10 Gordon introduces Sally to Sesame St~ SCENE 1 you&#39;ve   
+##  3     1 1969-11-10 Gordon introduces Sally to Sesame St~ SCENE 1 never    
+##  4     1 1969-11-10 Gordon introduces Sally to Sesame St~ SCENE 1 seen     
+##  5     1 1969-11-10 Gordon introduces Sally to Sesame St~ SCENE 1 a        
+##  6     1 1969-11-10 Gordon introduces Sally to Sesame St~ SCENE 1 street   
+##  7     1 1969-11-10 Gordon introduces Sally to Sesame St~ SCENE 1 like     
+##  8     1 1969-11-10 Gordon introduces Sally to Sesame St~ SCENE 1 sesame   
+##  9     1 1969-11-10 Gordon introduces Sally to Sesame St~ SCENE 1 street   
+## 10     1 1969-11-10 Gordon introduces Sally to Sesame St~ SCENE 1 everythi~
+## # ... with 2,388,720 more rows</code></pre>
+<div id="words-associated-with-our-main-friends" class="section level4">
+<h4>Words Associated with our Main Friends</h4>
+<p>Let’s first look at which words are more likely to appear with a certain furry friend over another.</p>
+<pre class="r"><code>ep_tokens %&gt;% 
+  inner_join(char_ep_count, by = &quot;ep&quot;) %&gt;% 
+  filter(character %in% char_list,
+         !str_detect(word, &quot;\\d|[:punct:]&quot;)) %&gt;% 
+  count(character, word) %&gt;% 
+  bind_log_odds(character, word, n) %&gt;% 
+  filter(abs(log_odds) &gt;= 1.96) %&gt;% 
+  group_by(character) %&gt;%
+  top_n(10, log_odds) %&gt;% 
+  ungroup() %&gt;% 
+  mutate(word = reorder_within(word, log_odds, character)) %&gt;% 
+  ggplot(aes(word, log_odds, fill = log_odds)) +
+  geom_col() + 
+  scale_fill_viridis_c(guide = F) +
+  scale_x_reordered() + 
+  coord_flip() + 
+  facet_wrap(~ character, scales = &quot;free_y&quot;) + 
+  labs(y = &quot;Log Odds&quot;,
+       x = &quot;Word&quot;,
+       title = &quot;Top words associated with each friend in the episode description&quot;)</code></pre>
+<p><img src="/post/2019-08-25-who-s-the-best-sesame-street-character_files/figure-html/unnamed-chunk-22-1.png" width="672" /></p>
+<p>Obviously we see their own names mentioned a lot. Big Bird has his nest, the Count likes…counting, Abby is a fairy with a wand, Grover is a superhero, Cookie Monster loves cookies, Ernie has his rubber duckie. I don’t know enough about Zoe or Rosita to know if theirs makes a lot of sense.</p>
+<p>I tried to see how the descriptions have changed over time but it was frankly uninteresting. The descriptions aren’t really indicative of the time period, which leads me to believe Sesame Street is truly timeless.</p>
+</div>
+</div>
+<div id="conclusion" class="section level2">
+<h2>Conclusion</h2>
+<p>So what can we take away about the usage rate of our furry friends over time? It seems I might have a point that classic friends are seeing reduced screen time to make way for new characters like Elmo, Abby, Zoe, and Rosita. The one that surprised me most is that Cookie Monster is getting more appearances because I would have assumed he was always a heavy hitter.</p>
+</div>

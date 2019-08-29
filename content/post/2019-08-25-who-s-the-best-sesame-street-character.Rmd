@@ -1,0 +1,375 @@
+---
+title: Who's the Best Sesame Street Character?
+author: Scott Frechette
+date: '2019-08-25'
+categories:
+  - pop culture
+tags:
+  - R
+  - pop culture
+  - media
+  - TV
+  - text
+slug: who-s-the-best-sesame-street-character
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
+```
+
+Part of having a toddler is trying to share things I enjoyed as a kid with her. We've also been trying to find ways to buy ourselves 15 minutes here and there so what could be better than putting Sesame Street on? She wasn't into it at first but has started warming up and asking for "Elmo", so I guess he's still popular.
+
+As we were watching some of the newer episodes I was shocked how many new characters there were. I kept waiting to see Bert & Ernie show up or Snuffy to lumber through the screen. I really felt like Elmo and Abby were dominating the screen time. 
+
+My wife told me I was crazy so obviously here I am. Let's find out for sure who's stealing the limelight these days. 
+
+## Setup
+
+Let's get it going. First load up the packages we need.
+
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(rvest)
+library(janitor)
+library(lubridate)
+library(furrr)
+library(scales)
+library(tidytext)
+library(tidylo)
+
+theme_set(tidyquant::theme_tq())
+
+plan(multiprocess)
+```
+
+## Get Episode Details
+
+Luckily there's a huge fandom around muppets so there's an entire wiki with details from  every episode. First we'll build a helper function to scrape details for a given episode. We want to make sure to include the overall details like air date and title as well as the different scenes. 
+
+```{r}
+get_ep_details <- function(ep) {
+  
+  tables <- read_html(str_glue("https://muppet.fandom.com/wiki/Episode_{ep}")) %>% 
+    html_table()
+  
+  ep_summary <- tables[[1]] %>% 
+    spread(X1, X2) %>% 
+    as_tibble() %>% 
+    clean_names() %>% 
+    select(air_date, title = plot) %>%
+    mutate(air_date = str_extract(air_date, "^[^\\(]+") %>% 
+             mdy())
+  
+  ep_scenes <- tables[[2]] %>% 
+    as_tibble() %>% 
+    select(-Picture) %>% 
+    clean_names()
+  
+  cbind(ep_summary, ep_scenes) %>% 
+    as_tibble()
+}
+
+
+```
+
+Before we run through every episode lets make sure it works on a single episode.
+
+```{r}
+get_ep_details(1000)
+```
+
+Perfect, so let's run through every episode. They're up in the 4900s so let's give it a buffer so this code can run into the future as well. We'll also be doing two things to make this run better:
+
+1. Using the `future_map()` function from the `furrr` package to use parallel processing of our `map` function
+2. Wrap the `get_ep_details()` function in `purrr::safely()` because not every episode number has details on the wiki
+
+```{r eval=FALSE}
+
+ep_details <- tibble(ep = 1:5000) %>%
+  mutate(ep = str_pad(ep, 4, pad = "0"),
+         deets = future_map(ep, safely(get_ep_details))) %>%
+  unnest() %>%
+  mutate(true_deets = future_map_lgl(deets, is_tibble)) %>%
+  filter(true_deets) %>%
+  select(-true_deets) %>%
+  unnest() %>%
+  drop_na(air_date) %>% 
+  mutate(segment = coalesce(segment, scene),
+         ep = as.numeric(ep)) %>%
+  select(ep, air_date, title, segment, description)
+
+ep_details
+```
+
+```{r eval=FALSE, include=FALSE}
+save(ep_details, file = here::here("static", "data", "2019-08-25_ep-details.rds"))
+```
+
+
+```{r echo=FALSE}
+load(here::here("static", "data", "2019-08-25_ep-details.rds"))
+
+ep_details
+```
+
+
+Looks good, but which episode numbers do we actually have data for?
+
+```{r}
+ep_details %>% 
+  distinct(ep, air_date) %>%
+  mutate(d = floor_date(air_date, "month")) %>%
+  ggplot(aes(ep)) + 
+  geom_bar()
+```
+
+It looks like a lot of white space where we would expect episodes if they were numbered continuously, but first two numbers denote the season so it just means they had less episodes a season earlier on. 
+
+So how many episodes are we working with?
+
+```{r}
+n_distinct(ep_details$ep)
+```
+
+
+## Sesame Street Characters
+
+The wiki also has a list of every single character that's been on Sesame Street so let's go ahead and grab those too. 
+
+```{r}
+get_characters <- function(letter) {
+  
+  read_html(str_glue("https://muppet.fandom.com/wiki/Category:Sesame_Street_Characters?from={letter}")) %>% 
+    html_nodes(".category-page__members li a") %>% 
+    html_text() %>% 
+    enframe(name = NULL) %>% 
+    rename(name = value)
+  
+}
+```
+
+For this we can just directly pass the built-in vector `letters` as well as `#` for any character that starts with a number.
+
+```{r eval=FALSE}
+all_characters <- map_df(c("#", letters), get_characters) %>%
+  distinct()
+
+all_characters
+```
+
+```{r eval=FALSE, include=FALSE}
+save(all_characters, file = here::here("static", "data", "2019-08-25_all-characters.rds"))
+```
+
+
+```{r echo = FALSE}
+load(file = here::here("static", "data", "2019-08-25_all-characters.rds"))
+
+all_characters
+```
+
+That's way too many characters to deal with, so on second thought let's just check out the characters I can easily think of for now. I didn't grow up with Abby, Zoe, and Rosita but I've obviously seen them a decent amount in the newer episodes so I'll add them in. 
+
+```{r}
+char_list <- c("Big Bird", "Snuff", "Elmo", "Bert", "Ernie", "Cookie Monster", "Count", 
+               "Oscar", "Grouch", "Grover", "Abby", "Zoe", "Rosita")
+```
+
+#### Character Segments
+
+First let's see which segments each of our characters are in. 
+
+```{r}
+
+char_segment_count <- ep_details %>% 
+  mutate(character = str_extract_all(description,
+                                 paste(char_list, collapse = "|"))) %>% 
+  unnest() %>% 
+  mutate(character = case_when(
+    str_detect(character, "Oscar|Grouch") ~ "Oscar the Grouch",
+    str_detect(character, "Snuff") ~ "Snuffy",
+    is.na(character) ~ "Other",
+    TRUE ~ character)) %>% 
+  distinct(ep, air_date, segment, character) %>% 
+  group_by(ep) %>% 
+  mutate(ep_segments = n_distinct(segment)) %>% 
+  ungroup() %>% 
+  count(ep, air_date, ep_segments, character, 
+        name = "char_segments") %>% 
+  add_count(character, wt = char_segments, name = "char_total_segments") %>% 
+  mutate(character = fct_reorder(character, -char_total_segments),
+         air_year = year(air_date))
+
+char_segment_count
+```
+
+It looks like the familiar names were used a lot in the beginning, but let's check their actual usage over time. 
+
+```{r}
+char_segment_count %>% 
+  count(air_year, character, wt = char_segments, name = "char_yr_segments") %>%
+  filter(character != "Other") %>% 
+  left_join(char_segment_count %>%
+              distinct(ep, air_year, ep_segments) %>% 
+              count(air_year, wt = ep_segments, name = "annual_segments"),
+            by = "air_year") %>% 
+  mutate(annual_count = char_yr_segments / annual_segments) %>% 
+  ggplot(aes(air_year, annual_count, color = character)) + 
+  geom_line() + 
+  scale_y_continuous(labels = percent) +
+  facet_wrap(~ character) + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  guides(color = FALSE) + 
+  labs(x = "Year", y = "Usage Rate", 
+       title = "What's the usage rate of each of our friends over time?",
+       subtitle = "Percentage of scenes each year")
+```
+
+We can definitely see the rise of Elmo starting in the 90s and really taking over in mid-2000s, and looks like that was all at the expense of Big Bird. What really stands out to me personally is that Bert & Ernie are used way less than what I remember. 
+
+### Character Episodes
+
+It also looks like some of our friends get the marquee treatment with the episode title. Let's do a similar analysis but this time limit ourselves to just the title of the episode.
+
+```{r}
+char_ep_count <- ep_details %>% 
+  mutate(character = str_extract_all(title,
+                                 paste(char_list, collapse = "|"))) %>% 
+  unnest() %>% 
+  mutate(character = case_when(
+    str_detect(character, "Oscar|Grouch") ~ "Oscar the Grouch",
+    str_detect(character, "Snuff") ~ "Snuffy",
+    is.na(character) ~ "Other",
+    TRUE ~ character)) %>% 
+  distinct(ep, air_date, title, character) %>%
+  count(ep, air_date, character, sort = T) %>% 
+  add_count(character, wt = n, name = "char_eps") %>% 
+  mutate(character = fct_reorder(character, -char_eps),
+         air_year = year(air_date))
+
+char_ep_count %>% 
+  filter(character != "Other") %>%
+  count(air_year, character, wt = n) %>% 
+  complete(air_year, character, fill = list(n = 0)) %>%
+  group_by(character) %>% 
+  filter(cumsum(n) > 0) %>% 
+  ungroup() %>% 
+  add_count(air_year, wt = n, name = "annual") %>% 
+  mutate(annual_count = n / annual) %>% 
+  ggplot(aes(air_year, annual_count, color = character)) + 
+  geom_line() + 
+  scale_y_continuous(labels = percent) +
+  facet_wrap(~ character) + 
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  guides(color = FALSE) + 
+  labs(x = "Year", y = "Usage Rate", 
+       title = "Which characters get the most episodes about them?",
+       subtitle = "Percentage of titles containing their name")
+```
+
+It's interesting to me that Elmo still hasn't taken over Oscar the Grouch in episode titles even though he's featured in so many segments now.
+
+### All Characters
+
+Just for fun let's circle back to that list of every character we pulled. How do the characters I name-dropped compare to the top characters of all time?
+
+```{r eval=FALSE}
+char_all_segment_count <- ep_details %>% 
+  mutate(character = str_extract_all(description,
+                                     paste(all_characters$name, collapse = "|"))) %>% 
+  unnest() %>% 
+  mutate(character = case_when(
+    str_detect(character, "Oscar|Grouch") ~ "Oscar the Grouch",
+    str_detect(character, "Snuffy") ~ "Snuffleupagus",
+    TRUE ~ character)) %>% 
+  distinct(ep, air_date, segment, character) %>% 
+  group_by(ep) %>% 
+  mutate(ep_segments = n_distinct(segment)) %>% 
+  ungroup() %>% 
+  count(ep, air_date, ep_segments, character, 
+        name = "char_segments", sort = T) %>% 
+  add_count(character, wt = char_segments, name = "char_total_segments") %>% 
+  mutate(character = fct_reorder(character, -char_total_segments),
+         air_year = year(air_date))
+```
+
+```{r eval=FALSE, include=FALSE}
+save(char_all_segment_count, file = here::here("static", "data", "2019-08-25_char_all_segment_count.rds"))
+```
+
+
+```{r echo = FALSE}
+load(file = here::here("static", "data", "2019-08-25_char_all_segment_count.rds"))
+
+char_all_segment_count
+```
+
+```{r fig.width=8}
+char_all_segment_count %>% 
+  count(air_year, character, wt = char_segments, 
+        name = "char_yr_segments") %>%
+  inner_join(char_all_segment_count %>% 
+               count(character, wt = char_segments) %>% 
+               top_n(25, wt = n) %>% 
+               distinct(character),
+             by = "character") %>%
+  add_count(air_year, wt = char_yr_segments, name = "annual") %>% 
+  mutate(annual_pct = char_yr_segments / annual) %>% 
+  ggplot(aes(air_year, annual_pct, color = character)) + 
+  geom_line() + 
+  scale_y_continuous(labels = percent) +
+  theme(axis.text.x = element_text(angle = 60, hjust = 1)) + 
+  facet_wrap(~ character) + 
+  guides(color = FALSE) + 
+  labs(x = "Year", y = "Usage Rate", 
+       title = "What's the usage rate of each of our friends over time?",
+       subtitle = "Percentage of scenes each year")
+```
+
+Not too shabby. We also see a lot of the humans like Maria, Al, Gordon, etc. showing up in here. I'm surprised to see Baby Bear up there, and I guess it makes sense Two-Headed Monster snuck in there by looming in the background a good amount. 
+
+## Description Analysis
+
+Let's finish up with a quick little text analysis of the descriptions. 
+
+```{r}
+ep_tokens <- ep_details %>% 
+  unnest_tokens(word, description)
+
+ep_tokens
+```
+
+#### Words Associated with our Main Friends
+
+Let's first look at which words are more likely to appear with a certain furry friend over another. 
+
+```{r}
+ep_tokens %>% 
+  inner_join(char_ep_count, by = "ep") %>% 
+  filter(character %in% char_list,
+         !str_detect(word, "\\d|[:punct:]")) %>% 
+  count(character, word) %>% 
+  bind_log_odds(character, word, n) %>% 
+  filter(abs(log_odds) >= 1.96) %>% 
+  group_by(character) %>%
+  top_n(10, log_odds) %>% 
+  ungroup() %>% 
+  mutate(word = reorder_within(word, log_odds, character)) %>% 
+  ggplot(aes(word, log_odds, fill = log_odds)) +
+  geom_col() + 
+  scale_fill_viridis_c(guide = F) +
+  scale_x_reordered() + 
+  coord_flip() + 
+  facet_wrap(~ character, scales = "free_y") + 
+  labs(y = "Log Odds",
+       x = "Word",
+       title = "Top words associated with each friend in the episode description")
+```
+
+Obviously we see their own names mentioned a lot. Big Bird has his nest, the Count likes...counting, Abby is a fairy with a wand, Grover is a superhero, Cookie Monster loves cookies, Ernie has his rubber duckie. I don't know enough about Zoe or Rosita to know if theirs makes a lot of sense. 
+
+I tried to see how the descriptions have changed over time but it was frankly uninteresting. The descriptions aren't really indicative of the time period, which leads me to believe Sesame Street is truly timeless. 
+
+## Conclusion
+
+So what can we take away about the usage rate of our furry friends over time? It seems I might have a point that classic friends are seeing reduced screen time to make way for new characters like Elmo, Abby, Zoe, and Rosita. The one that surprised me most is that Cookie Monster is getting more appearances because I would have assumed he was always a heavy hitter. 
