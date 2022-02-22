@@ -1,72 +1,70 @@
-baseurl = "/"
-title = "Frech Takes"
-theme = "ghostwriter"
+baseURL = "/"
 languageCode = "en-us"
-copyright = "My Name"
-disqusShortname = "XXX"
-googleAnalytics = "XXX"
-ignoreFiles = ["\\.Rmd$", "\\.Rmarkdown$", "_files$", "_cache$"]
+title = "Frech Takes"
+theme = "ezhil"
+paginate = 5
 
-[Privacy]
+copyright = "© Copyright notice"
 
-[Privacy.disqus]
-    disable = true
+pygmentsstyle = "solarized-dark"
+pygmentscodefences = true
+pygmentscodefencesguesssyntax = true
 
-[Privacy.googleAnalytics]
-    anonymizeIP = true
-    respectDoNotTrack = true
-    useSessionStorage = false
+googleAnalytics = "UA-123-45"
+disqusShortname = "frechtakes"
 
-[Author]
-    name = "Scott Frechette"
-    profile = "https://google.com/+XXX"
+summaryLength = 10
 
-[Taxonomies]
-    tag = "tags"
-
-[Params]
-    mainSections = ["post"]
-    intro = true
-    headline = "Frech Takes"
-    description = "Just a bunch of Frech takes from a guy learning R"
-    github = "https://github.com/scottfrechette"
-    linkedin = "www.linkedin.com/in/scott-frechette"
-    twitter = "https://twitter.com/scottfrechette"
-    email = "scottfrechette@gmail.com"
-    opengraph = true
-    shareTwitter = true
-    shareFacebook = false
-    shareGooglePlus = false
-    shareLinkedIn = false
-    dateFormat = "Mon, Jan 2, 2006"
-    highlightJsUrl = ""
-    highlightJsLocalUrl = ""
-    exponeaJsUrl = ""
-    exponeaTarget = ""
-    exponeaToken = ""
-    exponeaTrackVisits = false
-    readingTime = true
-    readingTimeText = "Estimated reading time:"
-
-[Permalinks]
-    post = "/:year/:month/:day/:filename/"
+[params]
+	subtitle = "Cooking up a new batch of half-baked ideas"
+	disableDisqusTypes = ["page"]
+	featherIconsCDN = true
+	readingTime = true
+  readingTimeText = "Estimated reading time:"
+	mode = "auto" # "dark", "auto", "light"
+	customCSS = "css/custom.css"  # Custom CSS applied to default styles.
+	customDarkCSS = "css/custom-dark.css"  # Custom styles applied to dark mode css.
+	# customJS = ["https://code.jquery.com/jquery-3.4.1.js", "js/custom1.js"]  # Custom JS scripts.
 
 [[menu.main]]
-    name = "Blog"
-    url = "/"
-    weight = 1
+name = "Home"
+url = "/"
+weight = 1
 
 [[menu.main]]
-    name = "Projects"
-    url = "/project/"
-    weight = 2
+name = "All posts"
+url = "/post"
+weight = 2
 
 [[menu.main]]
-    name = "Contact"
-    url = "/page/contact/"
-    weight = 3
+name = "About"
+url = "/about"
+weight = 3
 
 [[menu.main]]
-    name = "About"
-    url = "/page/about/"
-    weight = 4
+name = "Tags"
+url = "/tags"
+weight = 4
+
+[[params.social]]
+name = "Email"
+icon = "mail"
+url = "mailto:scottfrechette@gmail.com" 
+
+[[params.social]]
+name = "Github"
+icon = "github"
+url = "https://github.com/scotfrechette"
+
+[[params.social]]
+name = "LinkedIn"
+icon = "linkedin"
+url = "https://www.linkedin.com/in/scott-frechette/"
+
+[[params.social]]
+name = "RSS"
+icon = "rss"
+url = "/index.xml"
+
+[taxonomies]
+tag = "tags"
