@@ -1,6 +1,6 @@
 ---
-date: "2016-05-05T21:48:51-07:00"
+date: "2022-02-22T21:48:51-07:00"
 title: About
 ---
 
-Howdy, I'm Scott Frechette and I'm the data product partner (fancy term for PM) for Conversational AI at a regional bank based in Birmingham, AL. 
+Howdy, I'm Scott Frechette and I'm the Data Product Partner for Conversational AI at Regions Bank based in Birmingham, AL. 

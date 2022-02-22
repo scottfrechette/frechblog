@@ -4,7 +4,7 @@ title = "Frech Takes"
 theme = "ezhil"
 paginate = 5
 
-copyright = "© Copyright notice"
+copyright = "© 2022 Scott Frechette"
 
 pygmentsstyle = "solarized-dark"
 pygmentscodefences = true
@@ -23,7 +23,7 @@ summaryLength = 10
   readingTimeText = "Estimated reading time:"
 	mode = "auto" # "dark", "auto", "light"
 	customCSS = "css/custom.css"  # Custom CSS applied to default styles.
-	customDarkCSS = "css/custom-dark.css"  # Custom styles applied to dark mode css.
+	#customDarkCSS = "css/custom-dark.css"  # Custom styles applied to dark mode css.
 	# customJS = ["https://code.jquery.com/jquery-3.4.1.js", "js/custom1.js"]  # Custom JS scripts.
 
 [[menu.main]]
