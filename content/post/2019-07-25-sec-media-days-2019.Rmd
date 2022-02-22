@@ -10,17 +10,7 @@ tags:
 slug: sec-media-days-2019
 ---
 
-```{r setup, include=FALSE}title: SEC Media Days 2019
-author: Scott Frechette
-date: '2019-07-25'
-categories:
-  - sports
-tags:
-  - R
-  - football
-  - text
-slug: sec-media-days-2019
-
+```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
 options(width = 100, dplyr.width = 100)
 ```
