@@ -11,7 +11,7 @@ pygmentscodefences = true
 pygmentscodefencesguesssyntax = true
 
 googleAnalytics = "UA-123-45"
-disqusShortname = "frechtakes"
+#disqusShortname = "frechtakes"
 
 summaryLength = 10
 
