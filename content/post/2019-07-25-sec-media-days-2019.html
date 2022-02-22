@@ -10,21 +10,9 @@ tags:
 slug: sec-media-days-2019
 ---
 
+<script src="/rmarkdown-libs/header-attrs/header-attrs.js"></script>
 
 
-<p>```{r setup, include=FALSE}title: SEC Media Days 2019
-author: Scott Frechette
-date: ‘2019-07-25’
-categories:
-- sports
-tags:
-- R
-- football
-- text
-slug: sec-media-days-2019</p>
-<p>knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning=FALSE)
-options(width = 100, dplyr.width = 100)
-```</p>
 <p>I wanted to start a blog to document my NLP journey, and as a resident of Alabama I could think of no better place to start than analyzing SEC Media Days. Every year the highest paid public officials in the Southeast meet to discuss the most important topics plaguing their respective areas and forecasting how successful they will be this year with educating and developing the youth.</p>
 <p>Actually it’s just coaches engaging in coachspeak.</p>
 <p>Because publicly posting my education feels a bit daunting I thought I’d start slow. With this post I’m trying out Julia Silge and Tyler Schnoebelen’s new <a href="https://github.com/juliasilge/tidylo">tidylo</a> package, which she described <a href="https://juliasilge.com/blog/introducing-tidylo/">here</a>. Instead of relying on the old standard TF-IDF it uses log-odds weighted by an uninformative Dirichlet prior. If those words sounded even remotely interesting you should check out the <a href="https://www.cambridge.org/core/journals/political-analysis/article/fightin-words-lexical-feature-selection-and-evaluation-for-identifying-the-content-of-political-conflict/81B3703230D21620B81EB6E2266C7A66">original paper</a>.</p>
@@ -70,18 +58,18 @@ transcripts &lt;- map_df(speaker_ids, get_transcript)
 
 transcripts</code></pre>
 <pre><code>## # A tibble: 1,031 x 2
-##    speaker    text                                                         
-##    &lt;chr&gt;      &lt;chr&gt;                                                        
-##  1 STEVE SHAW We&#39;re going to do two things today.  I know we still have pe~
-##  2 STEVE SHAW And then the second part of this is going to be interactive.~
-##  3 STEVE SHAW So, this document, and I&#39;m going to put it up here, it&#39;s als~
-##  4 STEVE SHAW Now, unfortunately not all of the activities are captured he~
-##  5 STEVE SHAW So, the first question we&#39;re going to hit today is, do you e~
-##  6 STEVE SHAW So every play in every game, just like the players, every pl~
-##  7 STEVE SHAW You can have a missed call.  It&#39;s still negative, but an inc~
-##  8 STEVE SHAW Many times there&#39;s plays with comment only to give feedback ~
-##  9 STEVE SHAW The grading then goes that position specialist to validate i~
-## 10 STEVE SHAW So that&#39;s the accountability on a weekly basis, but then if ~
+##    speaker    text                                                                                  
+##    &lt;chr&gt;      &lt;chr&gt;                                                                                 
+##  1 STEVE SHAW We&#39;re going to do two things today.  I know we still have people coming in, but we&#39;re~
+##  2 STEVE SHAW And then the second part of this is going to be interactive.  Hopefully you have -- i~
+##  3 STEVE SHAW So, this document, and I&#39;m going to put it up here, it&#39;s also on the board, was reall~
+##  4 STEVE SHAW Now, unfortunately not all of the activities are captured here, but the majority of t~
+##  5 STEVE SHAW So, the first question we&#39;re going to hit today is, do you evaluate these guys?  Is t~
+##  6 STEVE SHAW So every play in every game, just like the players, every play in every game is grade~
+##  7 STEVE SHAW You can have a missed call.  It&#39;s still negative, but an incorrect -- when you put yo~
+##  8 STEVE SHAW Many times there&#39;s plays with comment only to give feedback to the officials, so they~
+##  9 STEVE SHAW The grading then goes that position specialist to validate it for that specific posit~
+## 10 STEVE SHAW So that&#39;s the accountability on a weekly basis, but then if you flip the document to ~
 ## # ... with 1,021 more rows</code></pre>
 </div>
 <div id="tokens" class="section level2">
@@ -93,33 +81,33 @@ transcripts</code></pre>
   count(speaker, word) %&gt;% 
   filter(!str_detect(speaker, &quot;COMMISSIONER|MODERATOR|Q$&quot;)) %&gt;% 
   bind_log_odds(speaker, word, n) %&gt;% 
-  arrange(-log_odds)
+  arrange(-log_odds_weighted)
 
 transcript_tokens</code></pre>
 <pre><code>## # A tibble: 8,586 x 4
-##    speaker       word            n log_odds
-##    &lt;chr&gt;         &lt;chr&gt;       &lt;int&gt;    &lt;dbl&gt;
-##  1 STEVE SHAW    targeting      68     7.85
-##  2 STEVE SHAW    foul           29     5.27
-##  3 STEVE SHAW    contact        27     4.72
-##  4 WILL MUSCHAMP carolina       22     4.70
-##  5 STEVE SHAW    defenseless    23     4.69
-##  6 STEVE SHAW    forcible       23     4.69
-##  7 WILL MUSCHAMP south          23     4.40
-##  8 STEVE SHAW    confirm        20     4.37
-##  9 DEREK MASON   ke&#39;shawn       16     4.22
-## 10 STEVE SHAW    helmet         19     4.15
+##    speaker       word            n log_odds_weighted
+##    &lt;chr&gt;         &lt;chr&gt;       &lt;int&gt;             &lt;dbl&gt;
+##  1 STEVE SHAW    targeting      68              17.8
+##  2 STEVE SHAW    foul           29              13.7
+##  3 BILL HANCOCK  football       11              12.7
+##  4 BILL HANCOCK  cfp            12              12.5
+##  5 STEVE SHAW    defenseless    23              12.2
+##  6 STEVE SHAW    forcible       23              12.2
+##  7 GREG SANKEY   officiating    21              12.1
+##  8 WILL MUSCHAMP carolina       22              11.6
+##  9 STEVE SHAW    replay         23              11.6
+## 10 JIMBO FISHER  targeting       1              11.5
 ## # ... with 8,576 more rows</code></pre>
 <p>Cool. Let’s check this out in a plot. Based on <a href="https://medium.com/@TSchnoebelen/i-dare-say-you-will-never-use-tf-idf-again-4918408b2310">Tyler’s</a> suggestion we would typically filter for terms with log odds above 1.96 so we were confident they were unique to the coach. But we have such little text for each coach that I chose to just display significance with a dashed red line instead. I’m also choosing to fill how many times the coach uttered a particular word to give a sense of frequency vs importance.</p>
 <pre class="r"><code>transcript_tokens %&gt;% 
   group_by(speaker) %&gt;% 
   slice(1:7) %&gt;% 
   ungroup() %&gt;% 
-  mutate(word = reorder_within(word, log_odds, speaker)) %&gt;% 
-  ggplot(aes(word, log_odds, fill = n)) + 
+  mutate(word = reorder_within(word, log_odds_weighted, speaker)) %&gt;% 
+  ggplot(aes(word, log_odds_weighted, fill = n)) + 
   geom_col() + 
   geom_hline(yintercept = 1.96, linetype = 2, color = &quot;red&quot;) + 
-  scale_fill_viridis_c(guide = F) + 
+  scale_fill_viridis_c(guide = &quot;none&quot;) + 
   coord_flip() + 
   scale_x_reordered() + 
   facet_wrap(~ speaker, scales = &quot;free_y&quot;, ncol = 3) + 
@@ -143,33 +131,33 @@ transcript_tokens</code></pre>
   count(speaker, bigram) %&gt;% 
   filter(!str_detect(speaker, &quot;COMMISSIONER|MODERATOR|Q$&quot;)) %&gt;% 
   bind_log_odds(speaker, bigram, n) %&gt;% 
-  arrange(-log_odds)
+  arrange(-log_odds_weighted)
 
 transcript_bigrams</code></pre>
-<pre><code>## # A tibble: 3,936 x 4
-##    speaker       bigram                 n log_odds
-##    &lt;chr&gt;         &lt;chr&gt;              &lt;int&gt;    &lt;dbl&gt;
-##  1 STEVE SHAW    forcible contact      23     4.82
-##  2 WILL MUSCHAMP south carolina        22     4.63
-##  3 STEVE SHAW    defenseless player    18     4.26
-##  4 STEVE SHAW    15 yard                8     2.83
-##  5 STEVE SHAW    targeting foul         8     2.83
-##  6 STEVE SHAW    yard penalty           8     2.83
-##  7 GUS MALZAHN   playing fast           6     2.62
-##  8 DEREK MASON   ke&#39;shawn vaughn        6     2.55
-##  9 STEVE SHAW    replay official        6     2.45
-## 10 STEVE SHAW    rules committee        6     2.45
-## # ... with 3,926 more rows</code></pre>
+<pre><code>## # A tibble: 3,860 x 4
+##    speaker       bigram                 n log_odds_weighted
+##    &lt;chr&gt;         &lt;chr&gt;              &lt;int&gt;             &lt;dbl&gt;
+##  1 STEVE SHAW    forcible contact      23             11.9 
+##  2 BILL HANCOCK  college football       8             11.7 
+##  3 WILL MUSCHAMP south carolina        22             10.7 
+##  4 STEVE SHAW    defenseless player    18             10.5 
+##  5 JIMBO FISHER  south carolina         2              9.74
+##  6 BILL HANCOCK  media days             3              7.95
+##  7 MATT LUKE     football team          3              7.32
+##  8 GUS MALZAHN   playing fast           6              6.98
+##  9 STEVE SHAW    15 yard                8              6.93
+## 10 STEVE SHAW    targeting foul         8              6.93
+## # ... with 3,850 more rows</code></pre>
 <p>How do these look?</p>
 <pre class="r"><code>transcript_bigrams %&gt;% 
   group_by(speaker) %&gt;%
   slice(1:7) %&gt;% 
   ungroup() %&gt;%
-  mutate(bigram = reorder_within(bigram, log_odds, speaker)) %&gt;% 
-  ggplot(aes(bigram, log_odds, fill = n)) + 
+  mutate(bigram = reorder_within(bigram, log_odds_weighted, speaker)) %&gt;% 
+  ggplot(aes(bigram, log_odds_weighted, fill = n)) + 
   geom_col() + 
   geom_hline(yintercept = 1.96, linetype = 2, color = &quot;red&quot;) +
-  scale_fill_viridis_c(guide = F) + 
+  scale_fill_viridis_c(guide = &quot;none&quot;) + 
   coord_flip() + 
   scale_x_reordered() + 
   facet_wrap(~ speaker, ncol = 3, scales = &quot;free_y&quot;) + 

@@ -98,7 +98,7 @@ transcript_tokens <- transcripts %>%
   count(speaker, word) %>% 
   filter(!str_detect(speaker, "COMMISSIONER|MODERATOR|Q$")) %>% 
   bind_log_odds(speaker, word, n) %>% 
-  arrange(-log_odds)
+  arrange(-log_odds_weighted)
 
 transcript_tokens
 ```
@@ -110,11 +110,11 @@ transcript_tokens %>%
   group_by(speaker) %>% 
   slice(1:7) %>% 
   ungroup() %>% 
-  mutate(word = reorder_within(word, log_odds, speaker)) %>% 
-  ggplot(aes(word, log_odds, fill = n)) + 
+  mutate(word = reorder_within(word, log_odds_weighted, speaker)) %>% 
+  ggplot(aes(word, log_odds_weighted, fill = n)) + 
   geom_col() + 
   geom_hline(yintercept = 1.96, linetype = 2, color = "red") + 
-  scale_fill_viridis_c(guide = F) + 
+  scale_fill_viridis_c(guide = "none") + 
   coord_flip() + 
   scale_x_reordered() + 
   facet_wrap(~ speaker, scales = "free_y", ncol = 3) + 
@@ -143,7 +143,7 @@ transcript_bigrams <- transcripts %>%
   count(speaker, bigram) %>% 
   filter(!str_detect(speaker, "COMMISSIONER|MODERATOR|Q$")) %>% 
   bind_log_odds(speaker, bigram, n) %>% 
-  arrange(-log_odds)
+  arrange(-log_odds_weighted)
 
 transcript_bigrams
 ```
@@ -156,11 +156,11 @@ transcript_bigrams %>%
   group_by(speaker) %>%
   slice(1:7) %>% 
   ungroup() %>%
-  mutate(bigram = reorder_within(bigram, log_odds, speaker)) %>% 
-  ggplot(aes(bigram, log_odds, fill = n)) + 
+  mutate(bigram = reorder_within(bigram, log_odds_weighted, speaker)) %>% 
+  ggplot(aes(bigram, log_odds_weighted, fill = n)) + 
   geom_col() + 
   geom_hline(yintercept = 1.96, linetype = 2, color = "red") +
-  scale_fill_viridis_c(guide = F) + 
+  scale_fill_viridis_c(guide = "none") + 
   coord_flip() + 
   scale_x_reordered() + 
   facet_wrap(~ speaker, ncol = 3, scales = "free_y") + 
