@@ -54,7 +54,7 @@ url = "mailto:scottfrechette@gmail.com"
 [[params.social]]
 name = "Github"
 icon = "github"
-url = "https://github.com/scotfrechette"
+url = "https://github.com/scottfrechette"
 
 [[params.social]]
 name = "LinkedIn"
