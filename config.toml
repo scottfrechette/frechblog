@@ -61,10 +61,10 @@ name = "LinkedIn"
 icon = "linkedin"
 url = "https://www.linkedin.com/in/scott-frechette/"
 
-[[params.social]]
-name = "RSS"
-icon = "rss"
-url = "/index.xml"
+#[[params.social]]
+#name = "RSS"
+#icon = "rss"
+#url = "/index.xml"
 
 [taxonomies]
 tag = "tags"
