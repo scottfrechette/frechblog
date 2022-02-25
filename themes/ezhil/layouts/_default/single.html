@@ -7,7 +7,17 @@
 
 		<div class="post-header">
 			<h1 class="title">{{ .Title }}</h1>
-			<div class="meta">Posted at &mdash; {{ dateFormat "Jan 2, 2006" .Date }}{{ if .Draft }} <span class="draft-label">DRAFT</span> {{ end }}</div>
+			<div class="meta">Posted at &mdash; {{ dateFormat "Jan 2, 2006" .Date }}
+		
+		{{ if .Draft }} <span class="draft-label">DRAFT</span>
+		{{ end }}
+    
+    {{ if .Site.Params.readingTime }}
+        <p class="post-reading post-line">
+            <span>{{ .Site.Params.readingTimeText }} {{ .Page.ReadingTime }} min</span>
+        </p>
+    {{ end }}
+			</div>
 		</div>
 
 		<div class="markdown">
