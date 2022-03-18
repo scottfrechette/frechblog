@@ -1,0 +1,255 @@
+---
+title: Bayesian Batting Averages
+author: Scott Frechette
+date: '2022-03-17'
+slug: 'bayesian-batting-averages'
+categories:
+  - sports
+  - Bayes
+tags:
+  - sports
+  - Bayes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+It's been quite a while since I posted. Not sure what could have kept me away. All I've done in the last 2.5 years is:
+
+- Had a 2nd kid
+- Moved
+- Global pandemic
+- Had a 3rd kid
+
+During that time away I've worked to teach myself Bayesian statistics. I've worked through a few sources, but two I keep coming back to are David Robinson's [Introduction to Empirical Bayes](http://varianceexplained.org/r/empirical-bayes-book/) and [Doing Bayesian Analysis, Second Edition](https://sites.google.com/site/doingbayesiandataanalysis/) by John Kruschke as well as Solomon Kurz's translation [Doing Bayesian Analysis in brms and tidyverse](https://bookdown.org/content/3686/). 
+
+One thing that stood out to me was that both of them used batting averages to explain Bayesian modeling. For Kruschke/Kurz it's a minor example in [Section 9.5.1](https://bookdown.org/content/3686/hierarchical-models.html#example-baseball-batting-abilities-by-position.) and for Robinson it's the example that motivates the entire book. Kruschke uses it to explain hierarchical modeling of players within positions and Robinson uses it to showcase the power of empirical Bayes. 
+
+I thought why not warm back up to this blog by doing a head-to-head challenge of the two approaches on the same dataset. 
+
+## Setup
+First load the packages we need for this comparison.
+```{r}
+library(tidyverse)
+library(Lahman)
+library(ebbr)
+library(brms)
+
+theme_set(theme_default())
+```
+
+Now load the data from `Lahman` package that Robinson used throughout his book. We'll also remove pitchers and filter for players that had at least 1 at bat. 
+```{r}
+
+career <- Master %>%
+  as_tibble() %>%
+  select(playerID, nameFirst, nameLast) %>%
+  unite(name, nameFirst, nameLast, sep = " ") %>%
+  left_join(Batting, by = 'playerID') %>% 
+  filter(AB > 0) %>%
+  anti_join(Pitching, by = "playerID") %>%
+  group_by(playerID, name) %>%
+  summarize(h = sum(H), 
+            ab = sum(AB),
+            year = mean(yearID),
+            .groups = "drop") %>%
+  mutate(average = h / ab)
+
+```
+
+## Explore Data
+
+First let's check out the overall distribution of raw batting averages. 
+
+```{r}
+career %>%
+  ggplot(aes(average)) + 
+  geom_histogram(binwidth = 0.01, color = 'white') + 
+  scale_x_continuous(breaks = seq(0, 1, by = 0.05)) + 
+  labs(x = "Batting Average",
+       y = "# Batters")
+```
+
+We can see most batters are between .200 and .300 with a typical batter around .250. As we'd expect the distribution can be pretty well defined by a beta distribution given the shape and bounds between 0 and 1. We also notice a few outliers above .400 as well as over 600 that never logged a hit. Surely those are affected by number of at bats.
+
+```{r}
+career %>% 
+  ggplot(aes(ab, average)) + 
+  geom_point(alpha = 0.2) + 
+  geom_smooth(method = 'lm', formula = 'y ~ x', se = F) +
+  scale_x_log10() + 
+  labs(x = "AB",
+       y = "Batting Average")
+```
+
+And just like that - most of this variation is from players with < 10 at bats and it starts to compress around 100 on through 10k. 
+
+The purpose of hierarchical or empirical Bayes is to use knowledge about those players with 1000+ at bats for those with fewer than 10 to help us determine a much more likely range for their true hitting ability. It's hard to imagine anyone thinking someone who got a hit in their first at bat will go on to bat 1.000 over a long career. Similarly swinging and missing in your first 10 at bats doesn't necessarily condemn you to a life of easy outs. 
+
+
+
+## Empirical Bayes
+
+Robinson's book derived from his blog posts are a great resource, but what's even better is he wrapped it all up in his `ebbr` package. His `add_ebb_estimate` function determines the prior from the data itself and applies to each batter. Most of the work is done by calling the `ebb_fit_prior` function that estimates the shape parameters of a beta distribution through maximum likelihood estimation based on a beta-binomial model by default, though you could also use method of moments or beta-binomial regression. 
+
+Empirical Bayes is often controversial but he addresses that well in his book so I won't go into it much except to say it seems pretty reasonable to rely on it here given the 12.5M at bats from 10k players tracked over 150 years. Not to mention batting average has remained fairly constant over time.
+
+```{r}
+career %>% 
+  mutate(decade = year %/% 10 * 10) %>% 
+  ggplot(aes(as.character(decade), average, group = decade)) + 
+  geom_boxplot() + 
+  labs(x = "Decade",
+       y = "Batting Average")
+```
+
+Let's apply the empirical Bayes method and see how it looks.
+
+```{r}
+bayes_emp <- career %>%
+  add_ebb_estimate(h, ab)
+
+bayes_emp
+```
+
+Looks like a lot of new columns added here. First we have `.alpha1` and .`beta1` which represent the posterior for each player. You'll notice they look fairly close to the raw `h` and `ab` columns, and that's because what we're essentially doing is giving each player a head start of 74 hits and 297 at bats before they even step to the plate. For a player with 10k at bats this will barely affect them but someone with 5 at bats will be pulled drastically towards the prior batting average of .249. In other words until I know a lot about a player I'll assume they're close to the average batter but with a high degree of uncertainty. 
+
+Next we have `.fitted` and `.raw`, which represent the empirical estimate and raw batting average, respectively. Just in the first 10 players listed alphabetically we can see Hank Aaron's averages are almost identical because of his 12k at bats but Frank Abercrombie goes from 0.000 to 0.247 despite no hits in 4 at bats. This is a feature of Bayesian methods called shrinkage where a posterior estimate is shifted from sample mean to the prior mean based on how much data is available. We can see this effect by plotting the raw average against the empirical Bayes estimate.
+
+```{r}
+bayes_emp %>%
+  ggplot(aes(.raw, .fitted, color = ab)) +
+  geom_point() +
+  geom_abline(color = 'red') + 
+  geom_hline(yintercept = 0.25, linetype = 2, color = 'red') +
+  scale_color_gradient(trans = 'log', 
+                       breaks = c(10, 100, 1000, 10000)) + 
+  labs(x = 'Batting Average',
+       y = 'Empirical Bayes Batting Average',
+       color = 'AB')
+```
+
+Notice how players with fewest at bats are shrunk almost completely to the overall mean but players with the most at bats are allowed to remain close to their raw average. 
+
+Finally we have `.low` and `.high`, which represent the credible intervals. As you might expect a player with a lot of shrinkage due to low sample size also has a higher degree of uncertainty reflected in these intervals. Hank Aaron has a tight 95% CI of .296 to .312 compared to Frank Abercrombie's .200 to .297. 
+
+Let's demonstrate this by taking our first 20 players and visualizing their raw average, posterior estimate, and 95% CI as well as indicating their at bats by their name. 
+
+```{r}
+bayes_emp %>% 
+  # sample_n(size = 20) %>% 
+  head(20) %>% 
+  mutate(player = paste0(name, " [", ab, "]")) %>% 
+  ggplot(aes(y = reorder(player, .fitted))) +
+  geom_point(aes(x = .raw), color = 'red') + 
+  geom_point(aes(x = .fitted)) +
+  geom_segment(aes(yend = reorder(player, .fitted), x = .low, xend = .high)) +
+  geom_vline(xintercept = 0.249, linetype = 2) + 
+  labs(x = "Batting Averages",
+       y = NULL)
+```
+
+As expected players we're more confident in batting abilities of players like Hank Aaron and Bobby Abreu compared to Frank Abercrombie and Andy Abad given their poor performance in their few times at bat. We can also see shrinkage of the black dots towards the overall mean based on extremity of raw average and number of at bats. 
+
+## Hierarchical
+
+Let's see how a true Bayesian modeling framework handles this data. Like Kurz in his translation we'll be relying on the `brms` package to build our model. 
+
+I'm cheating a little and just using the priors Kurz worked out in [his model](https://bookdown.org/content/3686/hierarchical-models.html#example-baseball-batting-abilities-by-position.) but applying it to the data Robinson used. Seems like Kruschke scraped his own data and it's just a lot easier to use an existing R package like Robinson, and also lets us directly compare methods.
+
+```{r eval=FALSE}
+bayes_hier <- brm(data = career,
+                  family = binomial(link = logit),
+                  h | trials(ab) ~ 1 + (1 | playerID),
+                  prior = c(prior(normal(0, 1.5), class = Intercept),
+                            prior(normal(0, 1), class = sd)),
+                  iter = 3500, warmup = 500, chains = 4, cores = 4,
+                  control = list(adapt_delta = .99))
+```
+
+```{r include=FALSE}
+bayes_hier <- brm(data = career,
+                  family = binomial(link = logit),
+                  h | trials(ab) ~ 1 + (1 | playerID),
+                  prior = c(prior(normal(0, 1.5), class = Intercept),
+                            prior(normal(0, 1), class = sd)),
+                  iter = 3500, warmup = 500, chains = 4, cores = 4,
+                  file = "fit/bayes_hier",
+                  control = list(adapt_delta = .99))
+```
+
+Yikes - on my terrible Windows laptop that took well over an hour to run compared to the empirical method that runs in seconds. 
+
+Like any good Bayesian I should first run some diagnostics to make sure everything looks alright.
+
+```{r}
+summary(bayes_hier)
+```
+
+```{r}
+plot(bayes_hier)
+```
+
+```{r}
+pp_check(bayes_hier, ndraws = 50)
+```
+
+No obvious issues there and because drawing from the posterior is a massive and complicated subject we'll just skip it for now and go straight to comparing the estimates from both methods as a way to explore this output.
+
+## Comparison
+
+Let's first combine the data and clean up the columns a little. 
+```{r eval=FALSE}
+bayes_joined <- career %>%
+  bind_cols(as_tibble(fitted(bayes_hier))) %>%
+  mutate(hb_avg = Estimate / ab, hb_lower = Q2.5 / ab, hb_upper = Q97.5 / ab) %>%
+  select(playerID, name, h, ab, raw_avg = average, hb_avg, hb_lower, hb_upper) %>%
+  left_join(select(bayes_emp, playerID, eb_avg = .fitted, eb_lower = .low, eb_upper = .high),
+            by = "playerID")
+
+bayes_joined
+```
+
+```{r echo=FALSE}
+load('fit/bayes_joined.rds')
+
+bayes_joined
+```
+
+At a quick glance both the point estimates and CIs seem to be pretty similar, so that's a good start. Let's plot and confirm.
+
+```{r}
+bayes_joined %>%
+  ggplot(aes(hb_avg, eb_avg, color = ab)) +
+  geom_point() +
+  geom_abline(color = 'red') + 
+  scale_color_gradient(trans = 'log', 
+                       breaks = c(10, 100, 1000, 10000)) + 
+  labs(x = 'Hierarchical Bayes Batting Average',
+       y = 'Empirical Bayes Batting Average',
+       color = 'AB')
+```
+
+Well I'd say that's pretty similar. 
+
+Finally let's show the plot Robinson used in his book to show the effects of shrinkage compared to raw estimates, but this time include hierarchical Bayes.
+```{r}
+bayes_joined %>%
+  select(playerID, h, ab, Raw = raw_avg, `Hierarchical Bayes` = hb_avg, `Empirical Bayes` = eb_avg) %>%
+  gather(key, value, Raw, `Hierarchical Bayes`, `Empirical Bayes`) %>%
+  mutate(key = fct_relevel(key, 'Raw', 'Empirical Bayes', 'Hierarchical Bayes')) %>% 
+  ggplot(aes(ab, value)) +
+  geom_point(alpha = 0.2) +
+  geom_hline(yintercept = 0.266, linetype = 2, color = 'red') +
+  geom_smooth(method = 'lm', formula = 'y ~ x', se = F) +
+  scale_x_log10() +
+  facet_wrap(~key) + 
+  labs(x = 'AB',
+       y = 'Batting Average')
+```
+
+First thing to note is the high amount of variance in lower at bats has gone away but not on the higher end. Also worth pointing out is further confirmation that empirical and hierarchical methods have almost the exact same shrinkage. 
+
+## Conclusion
+For situations like this batting average data it's clear the speed and simplicity of empirical Bayes compared to a hierarchical model are seemingly justified. It only takes seconds and you don't need to spend any time worrying about the prior because it's inferred from the data itself. The only danger is knowing when empirical estimates are unreliable and you should instead be switching back to the more robust methods found in frameworks like `brms`.
