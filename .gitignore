@@ -1,4 +1,5 @@
 .Rproj.user
+.Rprofile
 .Rhistory
 .RData
 .Ruserdata
@@ -8,4 +9,6 @@ english-ewt-ud-2.4-190531.udpipe
 .DS_Store
 Thumbs.db
 .hugo_build.lock
-**/fit/**
+content/post/*/fit/
+content/post/*/data/
+/blogdown/
