@@ -1,0 +1,517 @@
+---
+title: Revisiting Bayesian-Weighted Log Odds Part I
+subtitle: 'Part I'
+summary: 'Exploring different methods for calculating BWLO'
+author: Scott Frechette
+date: '2022-04-04'
+slug: revisiting-bwlo-part-i
+categories:
+  - r
+  - bayes
+tags:
+  - r
+  - bayes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo=TRUE, message=FALSE, warning=FALSE)
+```
+
+## Motivation
+
+I'm a big fan of the weighted log-odds method outlined in [Monroe, Colaresi, and Quinn (2008)]((http://languagelog.ldc.upenn.edu/myl/Monroe.pdf)) and implemented in the `tidylo` package by Julia Silge. I can't explain it better than her so I'll just quote the `tidylo` documentation:
+
+> How can we measure how the usage or frequency of some feature, such as words, differs across some group or set, such as documents? One option is to use the log odds ratio, but the log odds ratio alone does not account for sampling variability; we haven't counted every feature the same number of times so how do we know which differences are meaningful?
+>
+> Enter the weighted log odds, which tidylo provides an implementation for, using tidy data principles. In particular, here we use the method outlined in Monroe, Colaresi, and Quinn (2008) to weight the log odds ratio by a prior. By default, the prior is estimated from the data itself, an empirical Bayes approach, but an uninformative prior is also available.
+
+Whereas most regression models would estimate $P(group|word)$ this method instead estimates $P(word|group)$. As with many Bayesian methods it resonates with me given its ability to incorporate prior knowledge, encourage shrinkage/regularization, and account for sampling variability. 
+
+I came across Julia's initial [blogpost](https://juliasilge.com/blog/introducing-tidylo/) as she was developing `tidylo` and it has stuck with me ever since. On top of my first few blog posts I've even made it a core feature in one of my products in my day job so it's worked out pretty well so far, but I always wonder if I could improve it in any way. The main challenge I've had is the paper itself doesn't provide any code for implementation. Julia and her contributors worked out their own method that's available on [CRAN](https://juliasilge.github.io/tidylo/) but I've been tweaking one of my own for a while as well. You can even see some of my initial work documented when I commented on a [tidylo issue](https://github.com/juliasilge/tidylo/issues/3#issuecomment-522346412) back in 2019, though hopefully I've come a long way since then.
+
+I recently went on a hunt and found teaching materials from Monroe that includes a function for what he calls ["fightin' words"](https://burtmonroe.github.io/TextAsDataCourse/Tutorials/TADA-FightinWords.nb.html#). He doesn't specify use case, assumptions, limitations, etc. so I'm left guessing if it's general purpose or for that exact data. He relies on DTM and linear algebra so we'll see if we can't tidy that up a bit in the process. 
+
+I find myself constantly working out the details of the paper and then apparently forgetting everything I've learned and having to start over. This post is my attempt at understanding the paper, creating my own function, and documenting any conclusions. So it's less a clear explainer than me ordering my own thoughts, but maybe others will get inspired or help point out where I'm wrong or further debate the correct priors.
+
+## Setup
+
+Load the necessary packages
+
+```{r}
+library(tidyverse)
+library(tidylo)
+library(quanteda) # needed to load DTMs
+```
+
+Here is the function used by Monroe in his teaching materials.
+
+```{r}
+fwgroups <- function(dtm, groups, pair = NULL, weights = rep(1,nrow(dtm)), k.prior = .1) {
+  
+  weights[is.na(weights)] <- 0
+  
+  weights <- weights/mean(weights)
+  
+  zero.doc <- rowSums(dtm)==0 | weights==0
+  zero.term <- colSums(dtm[!zero.doc,])==0
+  
+  dtm.nz <- apply(dtm[!zero.doc,!zero.term],2,"*", weights[!zero.doc])
+  
+  g.prior <- tcrossprod(rowSums(dtm.nz),colSums(dtm.nz))/sum(dtm.nz)
+  
+  g.posterior <- as.matrix(dtm.nz + k.prior*g.prior)
+  
+  groups <- groups[!zero.doc]
+  groups <- droplevels(groups)
+  
+  g.adtm <- as.matrix(aggregate(x=g.posterior,by=list(groups=groups),FUN=sum)[,-1])
+  rownames(g.adtm) <- levels(groups)
+  
+  g.ladtm <- log(g.adtm)
+  
+  g.delta <- t(scale( t(scale(g.ladtm, center=T, scale=F)), center=T, scale=F))
+  
+  g.adtm_w <- -sweep(g.adtm,1,rowSums(g.adtm)) # terms not w spoken by k
+  g.adtm_k <- -sweep(g.adtm,2,colSums(g.adtm)) # w spoken by groups other than k
+  g.adtm_kw <- sum(g.adtm) - g.adtm_w - g.adtm_k - g.adtm # total terms not w or k 
+  
+  g.se <- sqrt(1/g.adtm + 1/g.adtm_w + 1/g.adtm_k + 1/g.adtm_kw)
+  
+  g.zeta <- g.delta/g.se
+  
+  g.counts <- as.matrix(aggregate(x=dtm.nz, by = list(groups=groups), FUN=sum)[,-1])
+  
+  if (!is.null(pair)) {
+    pr.delta <- t(scale( t(scale(g.ladtm[pair,], center = T, scale =F)), center=T, scale=F))
+    pr.adtm_w <- -sweep(g.adtm[pair,],1,rowSums(g.adtm[pair,]))
+    pr.adtm_k <- -sweep(g.adtm[pair,],2,colSums(g.adtm[pair,])) # w spoken by groups other than k
+    pr.adtm_kw <- sum(g.adtm[pair,]) - pr.adtm_w - pr.adtm_k - g.adtm[pair,] # total terms not w or k
+    pr.se <- sqrt(1/g.adtm[pair,] + 1/pr.adtm_w + 1/pr.adtm_k + 1/pr.adtm_kw)
+    pr.zeta <- pr.delta/pr.se
+    
+    return(list(zeta=pr.zeta[1,], delta=pr.delta[1,],se=pr.se[1,], counts = colSums(dtm.nz), acounts = colSums(g.adtm)))
+  } else {
+    return(list(zeta=g.zeta,delta=g.delta,se=g.se,counts=g.counts,acounts=g.adtm))
+  }
+}
+
+```
+
+Here is the data Monroe uses in his example, which can be found [here](https://github.com/burtmonroe/TextAsDataCourse/blob/master/Tutorials/poliblog5k.dfm.rds) and [here](https://github.com/burtmonroe/TextAsDataCourse/blob/master/Tutorials/poliblog5k.fullmeta.rds).
+
+```{r}
+poliblog.dfm <- readRDS("data/poliblog5k.dfm.rds")
+poliblog.meta <- readRDS("data/poliblog5k.fullmeta.rds")
+```
+
+We'll also go ahead and tidy it up for easier wrangling.
+
+```{r}
+poliblog_df <- poliblog.dfm %>% 
+  convert(., to = "data.frame") %>% 
+  as_tibble() %>% 
+  gather(word, n, -doc_id) %>% 
+  left_join(as_tibble(poliblog.meta), by = "doc_id") %>% 
+  count(rating, word, wt = n)
+```
+
+And finally let's execute his function, which will give us outputs for posterior (and therefore prior), delta, SE, and zeta as we evaluate and compare to `tidylo`.
+
+```{r}
+fw.blogideo <- fwgroups(poliblog.dfm, groups = poliblog.meta$rating, k.prior = .1)
+```
+
+Speaking of `tidylo` it's probably helpful to refer to the source code as we make these comparisons.
+
+```{r eval=FALSE}
+bind_log_odds <- function (tbl, set, feature, n, uninformative = FALSE, unweighted = FALSE) {
+  set <- enquo(set)
+  feature <- enquo(feature)
+  n_col <- enquo(n)
+  grouping <- group_vars(tbl)
+  tbl <- ungroup(tbl)
+  pseudo <- tbl
+  
+  if (uninformative) {
+    pseudo$alpha <- 1
+  } else {
+    feat_counts <- count(pseudo, !!feature, wt = !!n_col, name = ".n")
+    feat_counts <- left_join(tbl, feat_counts, by = as_name(feature))
+    pseudo$alpha <- feat_counts$.n
+  }
+  
+  pseudo <- mutate(pseudo, y_wi = !!n_col + alpha)
+  feat_counts <- count(pseudo, !!feature, wt = y_wi, name = "y_w")
+  set_counts <- count(pseudo, !!set, wt = y_wi, name = "n_i")
+  pseudo_counts <- left_join(pseudo, feat_counts, by = as_name(feature))
+  pseudo_counts <- left_join(pseudo_counts, set_counts, by = as_name(set))
+  results <- mutate(pseudo_counts, omega_wi = y_wi/(n_i - y_wi), 
+                    omega_w = y_w/(sum(y_wi) - y_w), 
+                    delta_wi = log(omega_wi) - log(omega_w), 
+                    sigma2_wi = 1/y_wi + 1/y_w, 
+                    zeta_wi = delta_wi/sqrt(sigma2_wi))
+  clean <- rename(results, log_odds_weighted = zeta_wi, log_odds = delta_wi)
+  tbl <- select(clean, -y_wi, -y_w, -n_i, -omega_wi, -omega_w, -sigma2_wi, -alpha)
+  
+  if (!unweighted) {tbl$log_odds <- NULL}
+  if (!is_empty(grouping)) {tbl <- group_by(tbl, !!sym(grouping))}
+  
+  tbl
+}
+```
+
+## Choosing the Prior
+
+One of the most difficult tasks in any Bayesian analysis is selecting the prior. To keep calculations simple Monroe et al. rely on a Dirichlet prior given its conjugacy to a multinomial distribution. This conjugacy enables us to use [additive smoothing](https://en.wikipedia.org/wiki/Additive_smoothing), or pseudocounts, to effectively add additional counts based on what we'd expect to see in the general dataset. They discuss three types of priors:
+
+1.  Uninformative prior such as 0.01 for all words
+2.  Informative Dirichlet prior
+3.  Laplace prior
+
+They discuss some concerns with Laplace prior so we won't even bother exploring it here. The uninformative prior is incredibly easy to implement, so even though it is not as likely to be useful we should keep it in our back pocket as an option.
+
+They define the informative Dirichlet prior in equation 23 as:
+
+$$\alpha^{(i)}_{kw} = \alpha^{(i)}_{k0}\hat\pi^{MLE} = y \cdot\frac{\alpha_0}{n}$$
+
+I find it easier to reorder this as `$\frac{y}{n} \cdot \alpha_0$`, where `$\frac{y}{n}$` is the expected proportion of each word and `$\alpha_0$` is the total count of words. Although we could use an external source like Wikipedia that gives us typical word usage for `$\frac{y}{n}$` it's actually a perfect time to use an empirical prior from the data itself (another [technique](https://frechtake.netlify.app/post/2022-03-13-bayesian-batting-averages/bayesian-batting-averages/) I'm quite fond of).
+
+The tricky bit then becomes how to estimate `$\alpha_0$`. In they paper they mention using 500 because it's the average number of words per day per party on each topic in their data set. So that's one option, but let's see what our friends Silge and Monroe have done as well.
+
+#### `Tidylo`
+
+The `tidylo` package defaults to using an empirical Bayes approach and estimating the prior from the data itself, although the user can opt to use an uninformative Dirichlet prior instead with prior set to 1 for each feature. The prior only takes a few lines and is pretty easy to spot in the source code (edited slightly to remove tidy evaluation):
+
+```{r}
+pseudo <- poliblog_df 
+feat_counts <- count(pseudo, word, wt = n, name = ".n")
+feat_counts <- left_join(poliblog_df, feat_counts, by = "word")
+pseudo$alpha <- feat_counts$.n
+
+pseudo
+```
+
+We can make this even easier with some refactoring:
+
+```{r}
+poliblog_df %>% 
+  add_count(word, wt = n, name = "alpha")
+```
+
+This approach is very simple and easy to implement - the prior is just the total count of the word in the entire dataset across all groups. In more formal terms this implies `$\alpha_0$` is `$n$`, which simplifies the equation as `$\frac{y}{n} \cdot n = y$`. It generally works well although I've seen a few instances where it creates a prior that's too difficult to overcome for a particular group if there is large imbalance of total volumes across groups. Let's see if we can simulate an example that feels a little off.
+
+```{r}
+set.seed(11)
+tidylo_test <- tibble(group = c(rep("group 1", 10), rep("group 2", 15)),
+                      word = sample(letters, 25),
+                      n = c(rpois(10, 10), rpois(15, 20))) %>% 
+  add_row(group = "group 1", word = "test", n = 5) %>% 
+  add_row(group = "group 2", word = "test", n = 25) %>% 
+  group_by(group) %>% 
+  mutate(pct = n / sum(n)) %>% 
+  ungroup() 
+
+tidylo_test %>% 
+  bind_log_odds(group, word, n) %>% 
+  filter(word == "test")
+```
+
+Here we see that even though the word "test" is 66% more prevalent in group 2 `tidylo` would consider it significantly more likely to occur in group 1. We can compare this to the uninformative version to see if the prior is causing a potential [Type S error](http://www.stat.columbia.edu/~gelman/research/published/francis8.pdf).
+
+```{r}
+tidylo_test %>% 
+  bind_log_odds(group, word, n, uninformative = T) %>% 
+  filter(word == "test")
+```
+
+It's not a perfect example but I think it does highlight potential issues with using overall frequency as the prior when there is an imbalance across group sample sizes. I've run into some of these funky situations in my day job that gave me pause and prompted me to dig deeper into the paper to understand why it was happening. To be clear, these don't occur often and I think the `tidylo` prior is generally correct, but I do believe we can improve on it.
+
+#### Monroe
+
+Perhaps one of the original authors managed to avoid this issue. Unfortunately we'll need to do a little more work to understand Monroe's prior. Let's first get our data in the same format as Monroe's function:
+
+```{r}
+dtm <- poliblog.dfm
+k.prior = .1
+weights = rep(1,nrow(dtm))
+weights[is.na(weights)] <- 0
+weights <- weights/mean(weights)
+zero.doc <- rowSums(dtm)==0 | weights==0
+zero.term <- colSums(dtm[!zero.doc,])==0
+dtm.nz <- apply(dtm[!zero.doc,!zero.term],2,"*", weights[!zero.doc])
+```
+
+Now we can calculate the prior and resulting posterior:
+
+```{r}
+g.prior <- tcrossprod(rowSums(dtm.nz),colSums(dtm.nz))/sum(dtm.nz)
+g.posterior <- as.matrix(dtm.nz + k.prior*g.prior)
+
+as_tibble(g.posterior, rownames = "doc_id")
+```
+
+We can see right away this data is at the document level and not aggregated to the ratings we're using as groups. Fortunately the next few lines of the function aggregate this for us.
+
+```{r}
+groups <- poliblog.meta$rating
+groups <- groups[!zero.doc]
+groups <- droplevels(groups)
+g.adtm <- as.matrix(aggregate(x=g.posterior,by=list(groups=groups),FUN=sum)[,-1])
+rownames(g.adtm) <- levels(groups)
+
+as_tibble(g.adtm, rownames = "rating")
+```
+
+Let's wrangle this and join it to original data so we can try to deduce what's happening here for those of us not experts in linear algebra. We can add this aggregated posterior to the tibble we created earlier and with some easy arithmetic calculate the prior.
+
+```{r}
+monroe_post <- left_join(poliblog_df,
+                         g.adtm %>% 
+                           as_tibble(rownames = "rating") %>% 
+                           gather(word, posterior, -rating),
+                         by = c("rating", "word")) %>% 
+  mutate(prior = posterior - n)
+
+monroe_post
+```
+
+We now have the value but need to figure out how to calculate it in a tidy fashion. The function again gives us a clue with the parameter for `k.prior`, which is set at 0.1 as default. The posterior is calculated as `dtm.nz + k.prior*g.prior`, which we can reframe as `n + 0.1*g.prior`. So now we can break down the prior a little more.
+
+```{r}
+monroe_post <- monroe_post %>% 
+  mutate(g.prior = prior / 0.1)
+```
+
+We've now isolated values for `g.prior` value in Monroe's function, which is calculated with `tcrossprod(rowSums(dtm.nz),colSums(dtm.nz))/sum(dtm.nz)`. Given this is still based on the document-term matrix we know rows will give total words per document, columns will give total frequency of a given word, and sum of the entire DTM will give total number of words. After some trial and error I'm able to create this in a tidy version.
+
+```{r}
+poliblog_df %>% 
+  add_tally(wt = n, name = "total_cnt") %>%
+  add_count(word, wt = n, name = "word_cnt") %>%
+  add_count(rating, wt = n, name = "group_cnt") %>%
+  mutate(g_prior = word_cnt / total_cnt * group_cnt)
+```
+
+Let's merge this with the code from above to compare.
+
+```{r}
+combined_gprior <- poliblog_df %>% 
+  add_tally(wt = n, name = "total_cnt") %>%
+  add_count(word, wt = n, name = "word_cnt") %>%
+  add_count(rating, wt = n, name = "group_cnt") %>%
+  mutate(g_prior = word_cnt / total_cnt * group_cnt) %>% 
+  left_join(monroe_post, by = c("rating", "word", "n"))
+```
+
+Looks good at first glance, but what's the overall error rate?
+
+```{r}
+summarize(combined_gprior, mse = mean((g_prior - g.prior)^2))
+```
+
+I think that'll do. Now that we know we can calculate it, what exactly are we measuring? As it turns out we simply need to change the code from `g_prior = word_cnt / total_cnt * group_cnt` to `g_prior = y / n * alpha0` to see what's happening here. Monroe is calculating the overall proportion of the word and then multiplying by the number of words in each group to get the expected count *per group* as the prior, which we can characterize as $\alpha_0 = n^i$ after adding in the notation for each group.
+
+The next question I have is about that `k.prior` - so we get our `g.prior` that's expected count per group assuming random assortment and multiply it by 0.1? The only conclusion I can come up with is Monroe is giving a penalty to $\alpha_0$ and only using 10% of total counts to reduce impact of the prior and let the data speak more.
+
+#### Paper
+
+We don't have a guidepost here but the explanation seems easy enough to deduce. Here's my take on it.
+
+```{r}
+poliblog_df %>% 
+  rename(count = n) %>% 
+  add_count(rating, wt = count, name = "group_count") %>% 
+  nest(data = c(word, count)) %>% 
+  mutate(alpha0 = mean(group_count)) %>% 
+  unnest(data) %>% 
+  add_tally(wt = count, name = "n") %>% 
+  add_count(word, wt = count, name = "y") %>% 
+  mutate(g_prior = y / n * alpha0)
+```
+
+This looks pretty similar to Monroe's code but I suspect that's because the groups have similar sample size and could diverge more in other datasets.
+
+#### Summary of Prior
+
+That was a lot but choosing priors is critical to any Bayesian method so worth the effort. To summarize the different calculations for `$\alpha_0$`:
+
+1.  Monroe uses `$n^i \cdot 10\%$`
+
+2.  `tidylo` uses `$n$`, which just nets out to `$y$`
+
+3.  Paper mentions words per day per party per topic as an option
+
+## Estimating the Delta
+
+Now that we have our priors for each implementation we need to identify different approaches to estimating the delta. I won't bother converting equation 15 to LaTeX for this post but it's the formula for the point estimate as log-odd-ratio.
+
+#### `Tidylo`
+
+Again the tidy code for `tidylo` is fairly easy to understand, particularly after removing the tidy evaluation logic.
+
+```{r}
+pseudo <- mutate(pseudo, y_wi = n + alpha)
+feat_counts <- count(pseudo, word, wt = y_wi, name = "y_w")
+set_counts <- count(pseudo, rating, wt = y_wi, name = "n_i")
+pseudo_counts <- left_join(pseudo, feat_counts, by = "word")
+pseudo_counts <- left_join(pseudo_counts, set_counts, by = "rating")
+results <- mutate(pseudo_counts, 
+                  omega_wi = y_wi/(n_i - y_wi), 
+                  omega_w = y_w/(sum(y_wi) - y_w), 
+                  delta_wi = log(omega_wi) - log(omega_w), 
+                  sigma2_wi = 1/y_wi + 1/y_w, 
+                  zeta_wi = delta_wi/sqrt(sigma2_wi))
+clean <- rename(results, log_odds_weighted = zeta_wi, log_odds = delta_wi)
+tbl <- select(clean, -y_wi, -y_w, -n_i, -omega_wi, -omega_w, -sigma2_wi, -alpha)
+
+tbl
+```
+
+We can also refactor this to make it simpler.
+
+```{r}
+poliblog_df %>% 
+  add_count(word, wt = n, name = "alpha") %>% 
+  mutate(y_wi = n + alpha) %>% 
+  add_count(word, wt = y_wi, name = 'y_w') %>% 
+  add_count(rating, wt = y_wi, name = "n_i") %>% 
+  mutate(omega_wi = y_wi/(n_i - y_wi), 
+         omega_w = y_w/(sum(y_wi) - y_w), 
+         delta_wi = log(omega_wi) - log(omega_w), 
+         sigma2_wi = 1/y_wi + 1/y_w, 
+         zeta_wi = delta_wi/sqrt(sigma2_wi)) %>% 
+  rename(log_odds_weighted = zeta_wi,
+         log_odds = delta_wi) %>% 
+  select(-y_wi, -y_w, -n_i, -omega_wi, -omega_w, -sigma2_wi, -alpha)
+```
+
+Again looks similar at first glance. I'll skip the rename step this time so we can join it to original `tidylo` code and compare.
+
+```{r}
+poliblog_df %>% 
+  add_count(word, wt = n, name = "alpha") %>% 
+  mutate(y_wi = n + alpha) %>% 
+  add_count(word, wt = y_wi, name = 'y_w') %>% 
+  add_count(rating, wt = y_wi, name = "n_i") %>% 
+  mutate(omega_wi = y_wi/(n_i - y_wi), 
+         omega_w = y_w/(sum(y_wi) - y_w), 
+         delta_wi = log(omega_wi) - log(omega_w), 
+         sigma2_wi = 1/y_wi + 1/y_w, 
+         zeta_wi = delta_wi/sqrt(sigma2_wi)) %>% 
+  select(-y_wi, -y_w, -n_i, -omega_wi, -omega_w, -sigma2_wi, -alpha) %>% 
+  left_join(tbl, by = c("rating", "word", "n")) %>% 
+  summarize(lo_mse = mean((delta_wi - log_odds)^2),
+            low_mse = mean((zeta_wi - log_odds_weighted)^2))
+```
+
+That'll do.
+
+#### Monroe
+
+Let's continue where we left off in Monroe's function and calculate what he calls `delta`. As a refresher we last created `g.adtm`, which is the aggregated posterior by group after we've added prior to original counts.
+
+```{r}
+g.ladtm <- log(g.adtm)
+g.delta <- t(scale( t(scale(g.ladtm, center=T, scale=F)), center=T, scale=F))
+
+as_tibble(g.delta, rownames = "rating")
+```
+
+We obviously can see the first step is to take the log of these posteriors. The next step is to center the logged posterior for each word, transpose, center again for each rating, and finally transpose back to original wide format. The output makes clear each word is centered so that the ratings are mirror images of each other.
+
+```{r}
+tidy_delta <- poliblog_df %>% 
+  # calculate empirical prior
+  add_tally(wt = n, name = "total_cnt") %>%
+  add_count(word, wt = n, name = "word_cnt") %>%
+  add_count(rating, wt = n, name = "group_cnt") %>%
+  mutate(posterior = word_cnt / total_cnt * group_cnt * 0.1) %>% 
+  # calculate delta
+  mutate(delta = log(n + posterior)) %>% 
+  group_by(word) %>% 
+  mutate(delta = delta - mean(delta)) %>%
+  group_by(rating) %>% 
+  mutate(tidy_delta = delta - mean(delta)) %>% 
+  ungroup() %>% 
+  select(rating, word, n, posterior, tidy_delta)
+
+tidy_delta
+```
+
+Let's join this to Monroe's data and compare.
+
+```{r}
+g.delta %>% 
+  as_tibble(rownames = "rating") %>% 
+  gather(word, monroe_delta, -rating) %>% 
+  left_join(tidy_delta, by = c("rating", "word"))
+```
+
+I'd say the first 10 rows suggest it's not even worth calculating error here because it's pretty clear we nailed it. But getting the code correct isn't the same as calculating the correct thing. This might be my lack of formal training with linear algebra here but centering the data across both dimensions doesn't seem the same to me as calculating the log-odds, and I also worry about scaling to more than 2 groups. This part of his code is where I really wonder if it was ever meant to be used broadly or just an effective way to measure this particular dataset.
+
+## Calculating Standard Error
+
+I won't bother showing how to calculate standard error for `tidylo` because the code is already included in the calculations for estimating the delta above. Instead I'll join that data below to compare to Monroe's version.
+
+Here's Monroe's code for calculating standard error.
+
+```{r}
+g.adtm_w <- -sweep(g.adtm,1,rowSums(g.adtm)) # terms not w spoken by k
+g.adtm_k <- -sweep(g.adtm,2,colSums(g.adtm)) # w spoken by groups other than k
+g.adtm_kw <- sum(g.adtm) - g.adtm_w - g.adtm_k - g.adtm # total terms not w or k 
+
+g.se <- sqrt(1/g.adtm + 1/g.adtm_w + 1/g.adtm_k + 1/g.adtm_kw)
+
+as_tibble(g.se, rownames = "rating")
+```
+
+Once again let's refactor into a tidy format.
+
+```{r}
+tidy_se <- poliblog_df %>% 
+  # calculate empirical prior
+  add_count(word, wt = n, name = "word_cnt") %>%
+  add_tally(wt = n, name = "total_cnt") %>%
+  add_count(rating, wt = n, name = "group_cnt") %>%
+  mutate(posterior = word_cnt / total_cnt * group_cnt * .1) %>% 
+  # calculate delta
+  mutate(delta = log(n + posterior)) %>% 
+  group_by(word) %>% 
+  mutate(delta = delta - mean(delta)) %>%
+  group_by(rating) %>% 
+  mutate(delta = delta - mean(delta)) %>% 
+  ungroup() %>% 
+  # calculate se
+  add_count(rating, wt = posterior, name = "group_posterior") %>%
+  add_count(word, wt = posterior, name = "word_posterior") %>%
+  add_count(wt = posterior, name = "total_posterior") %>%
+  mutate(g.adtm = n + posterior,
+         g.adtm_w = group_cnt + group_posterior - n - posterior,
+         g.adtm_k = word_cnt + word_posterior - n - posterior,
+         g.adtm_kw = total_cnt + total_posterior - g.adtm - g.adtm_w - g.adtm_k,
+         tidy_se = sqrt(1/g.adtm + 1/g.adtm_w + 1/g.adtm_k + 1/g.adtm_kw)) %>% 
+  select(rating, word, tidy_se)
+
+tidy_se
+```
+
+Now let's join that code to Monroe's code for comparison, and why not invite `tidylo` to the party as well.
+
+```{r}
+combined_se <- g.se %>% 
+  as_tibble(rownames = "rating") %>% 
+  gather(word, monroe_se, -rating) %>% 
+  left_join(tidy_se, by = c("rating", "word")) %>% 
+  left_join(transmute(results, rating, word, tidylo_se = sqrt(sigma2_wi)), 
+            by = c("rating", "word"))
+
+combined_se
+```
+
+The tidy implementation of Monroe's code is working, but also pretty apparent the `tidylo` implementation indicates more precision than Monroe's. The calculation there is `sigma2_wi = 1/y_wi + 1/y_w`, which translates roughly to `sigma2_wi = 1/g.adtm + 1/(total_cnt + total_posterior)` in syntax from above. A quick glance back at the paper shows `tidylo` implemented equation 18 whereas Monroe went for something closer to equation 17.
+
+## Conclusion 
+
+We've now developed a tidy implementation for code found buried in Monroe's teaching materials, for what that's worth, and compared it to the already tidy implementation of `tidylo` developed by Julia Silge. We saw clear differences in selecting the prior, as we'd expect of any good Bayesian workflow, but also some differences in estimating the log-odds and quantifying the uncertainty of the estimate.
+
+In the next post I'll try and create my own function that borrows from each of these and adds my own flair, while also making sure to pay proper homage to the original paper itself. Then we'll run all three implementations through some tests to gauge if my version is any better than the originals. 

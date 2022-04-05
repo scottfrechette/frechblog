@@ -1,0 +1,622 @@
+---
+title: Revisiting Bayesian-Weighted Log Odds Part I
+subtitle: 'Part I'
+# description: 'blah'
+summary: 'Exploring different methods for calculating BWLO'
+author: Scott Frechette
+date: '2022-04-04'
+slug: revisiting-bwlo-part-i
+categories:
+  - r
+  - bayes
+tags:
+  - r
+  - bayes
+draft: true 
+---
+
+
+
+<div id="motivation" class="section level2">
+<h2>Motivation</h2>
+<p>I’m a big fan of the weighted log-odds method outlined in <a href="(http://languagelog.ldc.upenn.edu/myl/Monroe.pdf)">Monroe, Colaresi, and Quinn (2008)</a> and implemented in the <code>tidylo</code> package by Julia Silge. I can’t explain it better than her so I’ll just quote the <code>tidylo</code> documentation:</p>
+<blockquote>
+<p>How can we measure how the usage or frequency of some feature, such as words, differs across some group or set, such as documents? One option is to use the log odds ratio, but the log odds ratio alone does not account for sampling variability; we haven’t counted every feature the same number of times so how do we know which differences are meaningful?</p>
+<p>Enter the weighted log odds, which tidylo provides an implementation for, using tidy data principles. In particular, here we use the method outlined in Monroe, Colaresi, and Quinn (2008) to weight the log odds ratio by a prior. By default, the prior is estimated from the data itself, an empirical Bayes approach, but an uninformative prior is also available.</p>
+</blockquote>
+<p>Whereas most regression models would estimate <span class="math inline">\(P(group|word)\)</span> this method instead estimates <span class="math inline">\(P(word|group)\)</span>. As with many Bayesian methods it resonates with me given its ability to incorporate prior knowledge, encourage shrinkage/regularization, and account for sampling variability.</p>
+<p>I came across Julia’s initial <a href="https://juliasilge.com/blog/introducing-tidylo/">blogpost</a> as she was developing <code>tidylo</code> and it has stuck with me ever since. On top of my first few blog posts I’ve even made it a core feature in one of my products in my day job so it’s worked out pretty well so far, but I always wonder if I could improve it in any way. The main challenge I’ve had is the paper itself doesn’t provide any code for implementation. Julia and her contributors worked out their own method that’s available on <a href="https://juliasilge.github.io/tidylo/">CRAN</a> but I’ve been tweaking one of my own for a while as well. You can even see some of my initial work documented when I commented on a <a href="https://github.com/juliasilge/tidylo/issues/3#issuecomment-522346412">tidylo issue</a> back in 2019, though hopefully I’ve come a long way since then.</p>
+<p>I recently went on a hunt and found teaching materials from Monroe that includes a function for what he calls <a href="https://burtmonroe.github.io/TextAsDataCourse/Tutorials/TADA-FightinWords.nb.html#">“fightin’ words”</a>. He doesn’t specify use case, assumptions, limitations, etc. so I’m left guessing if it’s general purpose or for that exact data. He relies on DTM and linear algebra so we’ll see if we can’t tidy that up a bit in the process.</p>
+<p>I find myself constantly working out the details of the paper and then apparently forgetting everything I’ve learned and having to start over. This post is my attempt at understanding the paper, creating my own function, and documenting any conclusions. So it’s less a clear explainer than me ordering my own thoughts, but maybe others will get inspired or help point out where I’m wrong or further debate the correct priors.</p>
+</div>
+<div id="setup" class="section level2">
+<h2>Setup</h2>
+<p>Load the necessary packages</p>
+<pre class="r"><code>library(tidyverse)
+library(tidylo)
+library(quanteda) # needed to load DTMs</code></pre>
+<p>Here is the function used by Monroe in his teaching materials.</p>
+<pre class="r"><code>fwgroups &lt;- function(dtm, groups, pair = NULL, weights = rep(1,nrow(dtm)), k.prior = .1) {
+  
+  weights[is.na(weights)] &lt;- 0
+  
+  weights &lt;- weights/mean(weights)
+  
+  zero.doc &lt;- rowSums(dtm)==0 | weights==0
+  zero.term &lt;- colSums(dtm[!zero.doc,])==0
+  
+  dtm.nz &lt;- apply(dtm[!zero.doc,!zero.term],2,&quot;*&quot;, weights[!zero.doc])
+  
+  g.prior &lt;- tcrossprod(rowSums(dtm.nz),colSums(dtm.nz))/sum(dtm.nz)
+  
+  g.posterior &lt;- as.matrix(dtm.nz + k.prior*g.prior)
+  
+  groups &lt;- groups[!zero.doc]
+  groups &lt;- droplevels(groups)
+  
+  g.adtm &lt;- as.matrix(aggregate(x=g.posterior,by=list(groups=groups),FUN=sum)[,-1])
+  rownames(g.adtm) &lt;- levels(groups)
+  
+  g.ladtm &lt;- log(g.adtm)
+  
+  g.delta &lt;- t(scale( t(scale(g.ladtm, center=T, scale=F)), center=T, scale=F))
+  
+  g.adtm_w &lt;- -sweep(g.adtm,1,rowSums(g.adtm)) # terms not w spoken by k
+  g.adtm_k &lt;- -sweep(g.adtm,2,colSums(g.adtm)) # w spoken by groups other than k
+  g.adtm_kw &lt;- sum(g.adtm) - g.adtm_w - g.adtm_k - g.adtm # total terms not w or k 
+  
+  g.se &lt;- sqrt(1/g.adtm + 1/g.adtm_w + 1/g.adtm_k + 1/g.adtm_kw)
+  
+  g.zeta &lt;- g.delta/g.se
+  
+  g.counts &lt;- as.matrix(aggregate(x=dtm.nz, by = list(groups=groups), FUN=sum)[,-1])
+  
+  if (!is.null(pair)) {
+    pr.delta &lt;- t(scale( t(scale(g.ladtm[pair,], center = T, scale =F)), center=T, scale=F))
+    pr.adtm_w &lt;- -sweep(g.adtm[pair,],1,rowSums(g.adtm[pair,]))
+    pr.adtm_k &lt;- -sweep(g.adtm[pair,],2,colSums(g.adtm[pair,])) # w spoken by groups other than k
+    pr.adtm_kw &lt;- sum(g.adtm[pair,]) - pr.adtm_w - pr.adtm_k - g.adtm[pair,] # total terms not w or k
+    pr.se &lt;- sqrt(1/g.adtm[pair,] + 1/pr.adtm_w + 1/pr.adtm_k + 1/pr.adtm_kw)
+    pr.zeta &lt;- pr.delta/pr.se
+    
+    return(list(zeta=pr.zeta[1,], delta=pr.delta[1,],se=pr.se[1,], counts = colSums(dtm.nz), acounts = colSums(g.adtm)))
+  } else {
+    return(list(zeta=g.zeta,delta=g.delta,se=g.se,counts=g.counts,acounts=g.adtm))
+  }
+}</code></pre>
+<p>Here is the data Monroe uses in his example, which can be found <a href="https://github.com/burtmonroe/TextAsDataCourse/blob/master/Tutorials/poliblog5k.dfm.rds">here</a> and <a href="https://github.com/burtmonroe/TextAsDataCourse/blob/master/Tutorials/poliblog5k.fullmeta.rds">here</a>.</p>
+<pre class="r"><code>poliblog.dfm &lt;- readRDS(&quot;data/poliblog5k.dfm.rds&quot;)
+poliblog.meta &lt;- readRDS(&quot;data/poliblog5k.fullmeta.rds&quot;)</code></pre>
+<p>We’ll also go ahead and tidy it up for easier wrangling.</p>
+<pre class="r"><code>poliblog_df &lt;- poliblog.dfm %&gt;% 
+  convert(., to = &quot;data.frame&quot;) %&gt;% 
+  as_tibble() %&gt;% 
+  gather(word, n, -doc_id) %&gt;% 
+  left_join(as_tibble(poliblog.meta), by = &quot;doc_id&quot;) %&gt;% 
+  count(rating, word, wt = n)</code></pre>
+<p>And finally let’s execute his function, which will give us outputs for posterior (and therefore prior), delta, SE, and zeta as we evaluate and compare to <code>tidylo</code>.</p>
+<pre class="r"><code>fw.blogideo &lt;- fwgroups(poliblog.dfm, groups = poliblog.meta$rating, k.prior = .1)</code></pre>
+<p>Speaking of <code>tidylo</code> it’s probably helpful to refer to the source code as we make these comparisons.</p>
+<pre class="r"><code>bind_log_odds &lt;- function (tbl, set, feature, n, uninformative = FALSE, unweighted = FALSE) {
+  set &lt;- enquo(set)
+  feature &lt;- enquo(feature)
+  n_col &lt;- enquo(n)
+  grouping &lt;- group_vars(tbl)
+  tbl &lt;- ungroup(tbl)
+  pseudo &lt;- tbl
+  
+  if (uninformative) {
+    pseudo$alpha &lt;- 1
+  } else {
+    feat_counts &lt;- count(pseudo, !!feature, wt = !!n_col, name = &quot;.n&quot;)
+    feat_counts &lt;- left_join(tbl, feat_counts, by = as_name(feature))
+    pseudo$alpha &lt;- feat_counts$.n
+  }
+  
+  pseudo &lt;- mutate(pseudo, y_wi = !!n_col + alpha)
+  feat_counts &lt;- count(pseudo, !!feature, wt = y_wi, name = &quot;y_w&quot;)
+  set_counts &lt;- count(pseudo, !!set, wt = y_wi, name = &quot;n_i&quot;)
+  pseudo_counts &lt;- left_join(pseudo, feat_counts, by = as_name(feature))
+  pseudo_counts &lt;- left_join(pseudo_counts, set_counts, by = as_name(set))
+  results &lt;- mutate(pseudo_counts, omega_wi = y_wi/(n_i - y_wi), 
+                    omega_w = y_w/(sum(y_wi) - y_w), 
+                    delta_wi = log(omega_wi) - log(omega_w), 
+                    sigma2_wi = 1/y_wi + 1/y_w, 
+                    zeta_wi = delta_wi/sqrt(sigma2_wi))
+  clean &lt;- rename(results, log_odds_weighted = zeta_wi, log_odds = delta_wi)
+  tbl &lt;- select(clean, -y_wi, -y_w, -n_i, -omega_wi, -omega_w, -sigma2_wi, -alpha)
+  
+  if (!unweighted) {tbl$log_odds &lt;- NULL}
+  if (!is_empty(grouping)) {tbl &lt;- group_by(tbl, !!sym(grouping))}
+  
+  tbl
+}</code></pre>
+</div>
+<div id="choosing-the-prior" class="section level2">
+<h2>Choosing the Prior</h2>
+<p>One of the most difficult tasks in any Bayesian analysis is selecting the prior. To keep calculations simple Monroe et al. rely on a Dirichlet prior given its conjugacy to a multinomial distribution. This conjugacy enables us to use <a href="https://en.wikipedia.org/wiki/Additive_smoothing">additive smoothing</a>, or pseudocounts, to effectively add additional counts based on what we’d expect to see in the general dataset. They discuss three types of priors:</p>
+<ol style="list-style-type: decimal">
+<li>Uninformative prior such as 0.01 for all words</li>
+<li>Informative Dirichlet prior</li>
+<li>Laplace prior</li>
+</ol>
+<p>They discuss some concerns with Laplace prior so we won’t even bother exploring it here. The uninformative prior is incredibly easy to implement, so even though it is not as likely to be useful we should keep it in our back pocket as an option.</p>
+<p>They define the informative Dirichlet prior in equation 23 as:</p>
+<p><span class="math display">\[\alpha^{(i)}_{kw} = \alpha^{(i)}_{k0}\hat\pi^{MLE} = y \cdot\frac{\alpha_0}{n}\]</span></p>
+<p>I find it easier to reorder this as <code>$\frac{y}{n} \cdot \alpha_0$</code>, where <code>$\frac{y}{n}$</code> is the expected proportion of each word and <code>$\alpha_0$</code> is the total count of words. Although we could use an external source like Wikipedia that gives us typical word usage for <code>$\frac{y}{n}$</code> it’s actually a perfect time to use an empirical prior from the data itself (another <a href="https://frechtake.netlify.app/post/2022-03-13-bayesian-batting-averages/bayesian-batting-averages/">technique</a> I’m quite fond of).</p>
+<p>The tricky bit then becomes how to estimate <code>$\alpha_0$</code>. In they paper they mention using 500 because it’s the average number of words per day per party on each topic in their data set. So that’s one option, but let’s see what our friends Silge and Monroe have done as well.</p>
+<div id="tidylo" class="section level4">
+<h4><code>Tidylo</code></h4>
+<p>The <code>tidylo</code> package defaults to using an empirical Bayes approach and estimating the prior from the data itself, although the user can opt to use an uninformative Dirichlet prior instead with prior set to 1 for each feature. The prior only takes a few lines and is pretty easy to spot in the source code (edited slightly to remove tidy evaluation):</p>
+<pre class="r"><code>pseudo &lt;- poliblog_df 
+feat_counts &lt;- count(pseudo, word, wt = n, name = &quot;.n&quot;)
+feat_counts &lt;- left_join(poliblog_df, feat_counts, by = &quot;word&quot;)
+pseudo$alpha &lt;- feat_counts$.n
+
+pseudo</code></pre>
+<pre><code>## # A tibble: 5,318 x 4
+##    rating       word        n alpha
+##    &lt;fct&gt;        &lt;chr&gt;   &lt;dbl&gt; &lt;dbl&gt;
+##  1 Conservative 21st       16    89
+##  2 Conservative â           0   492
+##  3 Conservative a.m        23   100
+##  4 Conservative abandon    77   133
+##  5 Conservative abc       165   307
+##  6 Conservative abil      123   271
+##  7 Conservative abl       239   538
+##  8 Conservative abort     253   373
+##  9 Conservative abroad     58   108
+## 10 Conservative absolut   127   296
+## # ... with 5,308 more rows</code></pre>
+<p>We can make this even easier with some refactoring:</p>
+<pre class="r"><code>poliblog_df %&gt;% 
+  add_count(word, wt = n, name = &quot;alpha&quot;)</code></pre>
+<pre><code>## # A tibble: 5,318 x 4
+##    rating       word        n alpha
+##    &lt;fct&gt;        &lt;chr&gt;   &lt;dbl&gt; &lt;dbl&gt;
+##  1 Conservative 21st       16    89
+##  2 Conservative â           0   492
+##  3 Conservative a.m        23   100
+##  4 Conservative abandon    77   133
+##  5 Conservative abc       165   307
+##  6 Conservative abil      123   271
+##  7 Conservative abl       239   538
+##  8 Conservative abort     253   373
+##  9 Conservative abroad     58   108
+## 10 Conservative absolut   127   296
+## # ... with 5,308 more rows</code></pre>
+<p>This approach is very simple and easy to implement - the prior is just the total count of the word in the entire dataset across all groups. In more formal terms this implies <code>$\alpha_0$</code> is <code>$n$</code>, which simplifies the equation as <code>$\frac{y}{n} \cdot n = y$</code>. It generally works well although I’ve seen a few instances where it creates a prior that’s too difficult to overcome for a particular group if there is large imbalance of total volumes across groups. Let’s see if we can simulate an example that feels a little off.</p>
+<pre class="r"><code>set.seed(11)
+tidylo_test &lt;- tibble(group = c(rep(&quot;group 1&quot;, 10), rep(&quot;group 2&quot;, 15)),
+                      word = sample(letters, 25),
+                      n = c(rpois(10, 10), rpois(15, 20))) %&gt;% 
+  add_row(group = &quot;group 1&quot;, word = &quot;test&quot;, n = 5) %&gt;% 
+  add_row(group = &quot;group 2&quot;, word = &quot;test&quot;, n = 25) %&gt;% 
+  group_by(group) %&gt;% 
+  mutate(pct = n / sum(n)) %&gt;% 
+  ungroup() 
+
+tidylo_test %&gt;% 
+  bind_log_odds(group, word, n) %&gt;% 
+  filter(word == &quot;test&quot;)</code></pre>
+<pre><code>## # A tibble: 2 x 5
+##   group   word      n    pct log_odds_weighted
+##   &lt;chr&gt;   &lt;chr&gt; &lt;dbl&gt;  &lt;dbl&gt;             &lt;dbl&gt;
+## 1 group 1 test      5 0.0521              2.08
+## 2 group 2 test     25 0.0868             -1.14</code></pre>
+<p>Here we see that even though the word “test” is 66% more prevalent in group 2 <code>tidylo</code> would consider it significantly more likely to occur in group 1. We can compare this to the uninformative version to see if the prior is causing a potential <a href="http://www.stat.columbia.edu/~gelman/research/published/francis8.pdf">Type S error</a>.</p>
+<pre class="r"><code>tidylo_test %&gt;% 
+  bind_log_odds(group, word, n, uninformative = T) %&gt;% 
+  filter(word == &quot;test&quot;)</code></pre>
+<pre><code>## # A tibble: 2 x 5
+##   group   word      n    pct log_odds_weighted
+##   &lt;chr&gt;   &lt;chr&gt; &lt;dbl&gt;  &lt;dbl&gt;             &lt;dbl&gt;
+## 1 group 1 test      5 0.0521            -0.790
+## 2 group 2 test     25 0.0868             0.387</code></pre>
+<p>It’s not a perfect example but I think it does highlight potential issues with using overall frequency as the prior when there is an imbalance across group sample sizes. I’ve run into some of these funky situations in my day job that gave me pause and prompted me to dig deeper into the paper to understand why it was happening. To be clear, these don’t occur often and I think the <code>tidylo</code> prior is generally correct, but I do believe we can improve on it.</p>
+</div>
+<div id="monroe" class="section level4">
+<h4>Monroe</h4>
+<p>Perhaps one of the original authors managed to avoid this issue. Unfortunately we’ll need to do a little more work to understand Monroe’s prior. Let’s first get our data in the same format as Monroe’s function:</p>
+<pre class="r"><code>dtm &lt;- poliblog.dfm
+k.prior = .1
+weights = rep(1,nrow(dtm))
+weights[is.na(weights)] &lt;- 0
+weights &lt;- weights/mean(weights)
+zero.doc &lt;- rowSums(dtm)==0 | weights==0
+zero.term &lt;- colSums(dtm[!zero.doc,])==0
+dtm.nz &lt;- apply(dtm[!zero.doc,!zero.term],2,&quot;*&quot;, weights[!zero.doc])</code></pre>
+<p>Now we can calculate the prior and resulting posterior:</p>
+<pre class="r"><code>g.prior &lt;- tcrossprod(rowSums(dtm.nz),colSums(dtm.nz))/sum(dtm.nz)
+g.posterior &lt;- as.matrix(dtm.nz + k.prior*g.prior)
+
+as_tibble(g.posterior, rownames = &quot;doc_id&quot;)</code></pre>
+<pre><code>## # A tibble: 5,000 x 2,660
+##    doc_id   happi  think    team    barri   thank   clark    big obama  latest
+##    &lt;chr&gt;    &lt;dbl&gt;  &lt;dbl&gt;   &lt;dbl&gt;    &lt;dbl&gt;   &lt;dbl&gt;   &lt;dbl&gt;  &lt;dbl&gt; &lt;dbl&gt;   &lt;dbl&gt;
+##  1 6787   3.00    1.05   1.01    1.00     1.01    2.00    1.02   4.18  1.00   
+##  2 8150   0.00305 1.05   0.00967 0.00138  0.00795 0.00275 0.0186 1.21  0.00571
+##  3 4961   0.00262 1.04   0.00828 0.00118  0.00681 0.00236 0.0159 0.176 1.00   
+##  4 5767   0.00266 0.0457 0.00840 0.00120  0.00691 0.00239 0.0162 0.178 0.00497
+##  5 2803   0.00256 0.0440 0.00809 0.00116  0.00665 0.00230 0.0156 2.17  0.00478
+##  6 2359   0.00695 1.12   0.0220  0.00315  0.0181  0.00626 1.04   0.467 0.0130 
+##  7 586    0.00188 1.03   0.00594 0.000850 0.00488 0.00169 0.0114 6.13  0.00351
+##  8 6033   0.00242 0.0416 0.00764 0.00109  0.00629 0.00218 0.0147 4.16  1.00   
+##  9 11745  0.00453 1.08   0.0143  0.00205  0.0118  0.00408 0.0276 9.30  1.01   
+## 10 923    0.00244 0.0419 0.00771 0.00110  0.00634 0.00219 0.0148 0.164 0.00456
+## # ... with 4,990 more rows, and 2,650 more variables: go &lt;dbl&gt;, mccain &lt;dbl&gt;,
+## #   patriot &lt;dbl&gt;, instead &lt;dbl&gt;, clip &lt;dbl&gt;, name &lt;dbl&gt;, clear &lt;dbl&gt;,
+## #   enough &lt;dbl&gt;, target &lt;dbl&gt;, today &lt;dbl&gt;, follow &lt;dbl&gt;, grand &lt;dbl&gt;,
+## #   tradit &lt;dbl&gt;, essenti &lt;dbl&gt;, speech &lt;dbl&gt;, design &lt;dbl&gt;, get &lt;dbl&gt;,
+## #   polit &lt;dbl&gt;, american &lt;dbl&gt;, charact &lt;dbl&gt;, media &lt;dbl&gt;, across &lt;dbl&gt;,
+## #   wonder &lt;dbl&gt;, part &lt;dbl&gt;, one &lt;dbl&gt;, repudi &lt;dbl&gt;, later &lt;dbl&gt;, date &lt;dbl&gt;,
+## #   becom &lt;dbl&gt;, full &lt;dbl&gt;, transcript &lt;dbl&gt;, servic &lt;dbl&gt;, near &lt;dbl&gt;, ...</code></pre>
+<p>We can see right away this data is at the document level and not aggregated to the ratings we’re using as groups. Fortunately the next few lines of the function aggregate this for us.</p>
+<pre class="r"><code>groups &lt;- poliblog.meta$rating
+groups &lt;- groups[!zero.doc]
+groups &lt;- droplevels(groups)
+g.adtm &lt;- as.matrix(aggregate(x=g.posterior,by=list(groups=groups),FUN=sum)[,-1])
+rownames(g.adtm) &lt;- levels(groups)
+
+as_tibble(g.adtm, rownames = &quot;rating&quot;)</code></pre>
+<pre><code>## # A tibble: 2 x 2,660
+##   rating     happi think  team barri thank clark   big obama latest    go mccain
+##   &lt;chr&gt;      &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt; &lt;dbl&gt;  &lt;dbl&gt; &lt;dbl&gt;  &lt;dbl&gt;
+## 1 Conservat~  112. 1554.  382.  84.5  295.  79.0  638. 8556.   231. 1884.  3913.
+## 2 Liberal     109. 2250.  318.  15.6  280. 120.   708. 6301.   183. 2446.  6682.
+## # ... with 2,648 more variables: patriot &lt;dbl&gt;, instead &lt;dbl&gt;, clip &lt;dbl&gt;,
+## #   name &lt;dbl&gt;, clear &lt;dbl&gt;, enough &lt;dbl&gt;, target &lt;dbl&gt;, today &lt;dbl&gt;,
+## #   follow &lt;dbl&gt;, grand &lt;dbl&gt;, tradit &lt;dbl&gt;, essenti &lt;dbl&gt;, speech &lt;dbl&gt;,
+## #   design &lt;dbl&gt;, get &lt;dbl&gt;, polit &lt;dbl&gt;, american &lt;dbl&gt;, charact &lt;dbl&gt;,
+## #   media &lt;dbl&gt;, across &lt;dbl&gt;, wonder &lt;dbl&gt;, part &lt;dbl&gt;, one &lt;dbl&gt;,
+## #   repudi &lt;dbl&gt;, later &lt;dbl&gt;, date &lt;dbl&gt;, becom &lt;dbl&gt;, full &lt;dbl&gt;,
+## #   transcript &lt;dbl&gt;, servic &lt;dbl&gt;, near &lt;dbl&gt;, bottom &lt;dbl&gt;, ...</code></pre>
+<p>Let’s wrangle this and join it to original data so we can try to deduce what’s happening here for those of us not experts in linear algebra. We can add this aggregated posterior to the tibble we created earlier and with some easy arithmetic calculate the prior.</p>
+<pre class="r"><code>monroe_post &lt;- left_join(poliblog_df,
+                         g.adtm %&gt;% 
+                           as_tibble(rownames = &quot;rating&quot;) %&gt;% 
+                           gather(word, posterior, -rating),
+                         by = c(&quot;rating&quot;, &quot;word&quot;)) %&gt;% 
+  mutate(prior = posterior - n)
+
+monroe_post</code></pre>
+<pre><code>## # A tibble: 5,318 x 5
+##    rating       word        n posterior prior
+##    &lt;chr&gt;        &lt;chr&gt;   &lt;dbl&gt;     &lt;dbl&gt; &lt;dbl&gt;
+##  1 Conservative 21st       16      20.4  4.45
+##  2 Conservative â           0      24.6 24.6 
+##  3 Conservative a.m        23      28.0  5.00
+##  4 Conservative abandon    77      83.6  6.64
+##  5 Conservative abc       165     180.  15.3 
+##  6 Conservative abil      123     137.  13.5 
+##  7 Conservative abl       239     266.  26.9 
+##  8 Conservative abort     253     272.  18.6 
+##  9 Conservative abroad     58      63.4  5.40
+## 10 Conservative absolut   127     142.  14.8 
+## # ... with 5,308 more rows</code></pre>
+<p>We now have the value but need to figure out how to calculate it in a tidy fashion. The function again gives us a clue with the parameter for <code>k.prior</code>, which is set at 0.1 as default. The posterior is calculated as <code>dtm.nz + k.prior*g.prior</code>, which we can reframe as <code>n + 0.1*g.prior</code>. So now we can break down the prior a little more.</p>
+<pre class="r"><code>monroe_post &lt;- monroe_post %&gt;% 
+  mutate(g.prior = prior / 0.1)</code></pre>
+<p>We’ve now isolated values for <code>g.prior</code> value in Monroe’s function, which is calculated with <code>tcrossprod(rowSums(dtm.nz),colSums(dtm.nz))/sum(dtm.nz)</code>. Given this is still based on the document-term matrix we know rows will give total words per document, columns will give total frequency of a given word, and sum of the entire DTM will give total number of words. After some trial and error I’m able to create this in a tidy version.</p>
+<pre class="r"><code>poliblog_df %&gt;% 
+  add_tally(wt = n, name = &quot;total_cnt&quot;) %&gt;%
+  add_count(word, wt = n, name = &quot;word_cnt&quot;) %&gt;%
+  add_count(rating, wt = n, name = &quot;group_cnt&quot;) %&gt;%
+  mutate(g_prior = word_cnt / total_cnt * group_cnt)</code></pre>
+<pre><code>## # A tibble: 5,318 x 7
+##    rating       word        n total_cnt word_cnt group_cnt g_prior
+##    &lt;fct&gt;        &lt;chr&gt;   &lt;dbl&gt;     &lt;dbl&gt;    &lt;dbl&gt;     &lt;dbl&gt;   &lt;dbl&gt;
+##  1 Conservative 21st       16   1006707       89    502918    44.5
+##  2 Conservative â           0   1006707      492    502918   246. 
+##  3 Conservative a.m        23   1006707      100    502918    50.0
+##  4 Conservative abandon    77   1006707      133    502918    66.4
+##  5 Conservative abc       165   1006707      307    502918   153. 
+##  6 Conservative abil      123   1006707      271    502918   135. 
+##  7 Conservative abl       239   1006707      538    502918   269. 
+##  8 Conservative abort     253   1006707      373    502918   186. 
+##  9 Conservative abroad     58   1006707      108    502918    54.0
+## 10 Conservative absolut   127   1006707      296    502918   148. 
+## # ... with 5,308 more rows</code></pre>
+<p>Let’s merge this with the code from above to compare.</p>
+<pre class="r"><code>combined_gprior &lt;- poliblog_df %&gt;% 
+  add_tally(wt = n, name = &quot;total_cnt&quot;) %&gt;%
+  add_count(word, wt = n, name = &quot;word_cnt&quot;) %&gt;%
+  add_count(rating, wt = n, name = &quot;group_cnt&quot;) %&gt;%
+  mutate(g_prior = word_cnt / total_cnt * group_cnt) %&gt;% 
+  left_join(monroe_post, by = c(&quot;rating&quot;, &quot;word&quot;, &quot;n&quot;))</code></pre>
+<p>Looks good at first glance, but what’s the overall error rate?</p>
+<pre class="r"><code>summarize(combined_gprior, mse = mean((g_prior - g.prior)^2))</code></pre>
+<pre><code>## # A tibble: 1 x 1
+##        mse
+##      &lt;dbl&gt;
+## 1 5.52e-26</code></pre>
+<p>I think that’ll do. Now that we know we can calculate it, what exactly are we measuring? As it turns out we simply need to change the code from <code>g_prior = word_cnt / total_cnt * group_cnt</code> to <code>g_prior = y / n * alpha0</code> to see what’s happening here. Monroe is calculating the overall proportion of the word and then multiplying by the number of words in each group to get the expected count <em>per group</em> as the prior, which we can characterize as <span class="math inline">\(\alpha_0 = n^i\)</span> after adding in the notation for each group.</p>
+<p>The next question I have is about that <code>k.prior</code> - so we get our <code>g.prior</code> that’s expected count per group assuming random assortment and multiply it by 0.1? The only conclusion I can come up with is Monroe is giving a penalty to <span class="math inline">\(\alpha_0\)</span> and only using 10% of total counts to reduce impact of the prior and let the data speak more.</p>
+</div>
+<div id="paper" class="section level4">
+<h4>Paper</h4>
+<p>We don’t have a guidepost here but the explanation seems easy enough to deduce. Here’s my take on it.</p>
+<pre class="r"><code>poliblog_df %&gt;% 
+  rename(count = n) %&gt;% 
+  add_count(rating, wt = count, name = &quot;group_count&quot;) %&gt;% 
+  nest(data = c(word, count)) %&gt;% 
+  mutate(alpha0 = mean(group_count)) %&gt;% 
+  unnest(data) %&gt;% 
+  add_tally(wt = count, name = &quot;n&quot;) %&gt;% 
+  add_count(word, wt = count, name = &quot;y&quot;) %&gt;% 
+  mutate(g_prior = y / n * alpha0)</code></pre>
+<pre><code>## # A tibble: 5,318 x 8
+##    rating       group_count word    count  alpha0       n     y g_prior
+##    &lt;fct&gt;              &lt;dbl&gt; &lt;chr&gt;   &lt;dbl&gt;   &lt;dbl&gt;   &lt;dbl&gt; &lt;dbl&gt;   &lt;dbl&gt;
+##  1 Conservative      502918 21st       16 503354. 1006707    89    44.5
+##  2 Conservative      502918 â           0 503354. 1006707   492   246  
+##  3 Conservative      502918 a.m        23 503354. 1006707   100    50  
+##  4 Conservative      502918 abandon    77 503354. 1006707   133    66.5
+##  5 Conservative      502918 abc       165 503354. 1006707   307   154. 
+##  6 Conservative      502918 abil      123 503354. 1006707   271   136. 
+##  7 Conservative      502918 abl       239 503354. 1006707   538   269  
+##  8 Conservative      502918 abort     253 503354. 1006707   373   186. 
+##  9 Conservative      502918 abroad     58 503354. 1006707   108    54  
+## 10 Conservative      502918 absolut   127 503354. 1006707   296   148  
+## # ... with 5,308 more rows</code></pre>
+<p>This looks pretty similar to Monroe’s code but I suspect that’s because the groups have similar sample size and could diverge more in other datasets.</p>
+</div>
+<div id="summary-of-prior" class="section level4">
+<h4>Summary of Prior</h4>
+<p>That was a lot but choosing priors is critical to any Bayesian method so worth the effort. To summarize the different calculations for <code>$\alpha_0$</code>:</p>
+<ol style="list-style-type: decimal">
+<li><p>Monroe uses <code>$n^i \cdot 10\%$</code></p></li>
+<li><p><code>tidylo</code> uses <code>$n$</code>, which just nets out to <code>$y$</code></p></li>
+<li><p>Paper mentions words per day per party per topic as an option</p></li>
+</ol>
+</div>
+</div>
+<div id="estimating-the-delta" class="section level2">
+<h2>Estimating the Delta</h2>
+<p>Now that we have our priors for each implementation we need to identify different approaches to estimating the delta. I won’t bother converting equation 15 to LaTeX for this post but it’s the formula for the point estimate as log-odd-ratio.</p>
+<div id="tidylo-1" class="section level4">
+<h4><code>Tidylo</code></h4>
+<p>Again the tidy code for <code>tidylo</code> is fairly easy to understand, particularly after removing the tidy evaluation logic.</p>
+<pre class="r"><code>pseudo &lt;- mutate(pseudo, y_wi = n + alpha)
+feat_counts &lt;- count(pseudo, word, wt = y_wi, name = &quot;y_w&quot;)
+set_counts &lt;- count(pseudo, rating, wt = y_wi, name = &quot;n_i&quot;)
+pseudo_counts &lt;- left_join(pseudo, feat_counts, by = &quot;word&quot;)
+pseudo_counts &lt;- left_join(pseudo_counts, set_counts, by = &quot;rating&quot;)
+results &lt;- mutate(pseudo_counts, 
+                  omega_wi = y_wi/(n_i - y_wi), 
+                  omega_w = y_w/(sum(y_wi) - y_w), 
+                  delta_wi = log(omega_wi) - log(omega_w), 
+                  sigma2_wi = 1/y_wi + 1/y_w, 
+                  zeta_wi = delta_wi/sqrt(sigma2_wi))
+clean &lt;- rename(results, log_odds_weighted = zeta_wi, log_odds = delta_wi)
+tbl &lt;- select(clean, -y_wi, -y_w, -n_i, -omega_wi, -omega_w, -sigma2_wi, -alpha)
+
+tbl</code></pre>
+<pre><code>## # A tibble: 5,318 x 5
+##    rating       word        n log_odds log_odds_weighted
+##    &lt;fct&gt;        &lt;chr&gt;   &lt;dbl&gt;    &lt;dbl&gt;             &lt;dbl&gt;
+##  1 Conservative 21st       16  -0.240             -2.08 
+##  2 Conservative â           0  -0.405             -7.79 
+##  3 Conservative a.m        23  -0.198             -1.85 
+##  4 Conservative abandon    77   0.0516             0.605
+##  5 Conservative abc       165   0.0250             0.441
+##  6 Conservative abil      123  -0.0310            -0.504
+##  7 Conservative abl       239  -0.0376            -0.861
+##  8 Conservative abort     253   0.113              2.26 
+##  9 Conservative abroad     58   0.0247             0.259
+## 10 Conservative absolut   127  -0.0482            -0.815
+## # ... with 5,308 more rows</code></pre>
+<p>We can also refactor this to make it simpler.</p>
+<pre class="r"><code>poliblog_df %&gt;% 
+  add_count(word, wt = n, name = &quot;alpha&quot;) %&gt;% 
+  mutate(y_wi = n + alpha) %&gt;% 
+  add_count(word, wt = y_wi, name = &#39;y_w&#39;) %&gt;% 
+  add_count(rating, wt = y_wi, name = &quot;n_i&quot;) %&gt;% 
+  mutate(omega_wi = y_wi/(n_i - y_wi), 
+         omega_w = y_w/(sum(y_wi) - y_w), 
+         delta_wi = log(omega_wi) - log(omega_w), 
+         sigma2_wi = 1/y_wi + 1/y_w, 
+         zeta_wi = delta_wi/sqrt(sigma2_wi)) %&gt;% 
+  rename(log_odds_weighted = zeta_wi,
+         log_odds = delta_wi) %&gt;% 
+  select(-y_wi, -y_w, -n_i, -omega_wi, -omega_w, -sigma2_wi, -alpha)</code></pre>
+<pre><code>## # A tibble: 5,318 x 5
+##    rating       word        n log_odds log_odds_weighted
+##    &lt;fct&gt;        &lt;chr&gt;   &lt;dbl&gt;    &lt;dbl&gt;             &lt;dbl&gt;
+##  1 Conservative 21st       16  -0.240             -2.08 
+##  2 Conservative â           0  -0.405             -7.79 
+##  3 Conservative a.m        23  -0.198             -1.85 
+##  4 Conservative abandon    77   0.0516             0.605
+##  5 Conservative abc       165   0.0250             0.441
+##  6 Conservative abil      123  -0.0310            -0.504
+##  7 Conservative abl       239  -0.0376            -0.861
+##  8 Conservative abort     253   0.113              2.26 
+##  9 Conservative abroad     58   0.0247             0.259
+## 10 Conservative absolut   127  -0.0482            -0.815
+## # ... with 5,308 more rows</code></pre>
+<p>Again looks similar at first glance. I’ll skip the rename step this time so we can join it to original <code>tidylo</code> code and compare.</p>
+<pre class="r"><code>poliblog_df %&gt;% 
+  add_count(word, wt = n, name = &quot;alpha&quot;) %&gt;% 
+  mutate(y_wi = n + alpha) %&gt;% 
+  add_count(word, wt = y_wi, name = &#39;y_w&#39;) %&gt;% 
+  add_count(rating, wt = y_wi, name = &quot;n_i&quot;) %&gt;% 
+  mutate(omega_wi = y_wi/(n_i - y_wi), 
+         omega_w = y_w/(sum(y_wi) - y_w), 
+         delta_wi = log(omega_wi) - log(omega_w), 
+         sigma2_wi = 1/y_wi + 1/y_w, 
+         zeta_wi = delta_wi/sqrt(sigma2_wi)) %&gt;% 
+  select(-y_wi, -y_w, -n_i, -omega_wi, -omega_w, -sigma2_wi, -alpha) %&gt;% 
+  left_join(tbl, by = c(&quot;rating&quot;, &quot;word&quot;, &quot;n&quot;)) %&gt;% 
+  summarize(lo_mse = mean((delta_wi - log_odds)^2),
+            low_mse = mean((zeta_wi - log_odds_weighted)^2))</code></pre>
+<pre><code>## # A tibble: 1 x 2
+##   lo_mse low_mse
+##    &lt;dbl&gt;   &lt;dbl&gt;
+## 1      0       0</code></pre>
+<p>That’ll do.</p>
+</div>
+<div id="monroe-1" class="section level4">
+<h4>Monroe</h4>
+<p>Let’s continue where we left off in Monroe’s function and calculate what he calls <code>delta</code>. As a refresher we last created <code>g.adtm</code>, which is the aggregated posterior by group after we’ve added prior to original counts.</p>
+<pre class="r"><code>g.ladtm &lt;- log(g.adtm)
+g.delta &lt;- t(scale( t(scale(g.ladtm, center=T, scale=F)), center=T, scale=F))
+
+as_tibble(g.delta, rownames = &quot;rating&quot;)</code></pre>
+<pre><code>## # A tibble: 2 x 2,660
+##   rating      happi  think    team  barri    thank  clark     big  obama  latest
+##   &lt;chr&gt;       &lt;dbl&gt;  &lt;dbl&gt;   &lt;dbl&gt;  &lt;dbl&gt;    &lt;dbl&gt;  &lt;dbl&gt;   &lt;dbl&gt;  &lt;dbl&gt;   &lt;dbl&gt;
+## 1 Conserva~ -0.0191 -0.218  0.0591  0.814 -0.00656 -0.242 -0.0847  0.120  0.0839
+## 2 Liberal    0.0191  0.218 -0.0591 -0.814  0.00656  0.242  0.0847 -0.120 -0.0839
+## # ... with 2,650 more variables: go &lt;dbl&gt;, mccain &lt;dbl&gt;, patriot &lt;dbl&gt;,
+## #   instead &lt;dbl&gt;, clip &lt;dbl&gt;, name &lt;dbl&gt;, clear &lt;dbl&gt;, enough &lt;dbl&gt;,
+## #   target &lt;dbl&gt;, today &lt;dbl&gt;, follow &lt;dbl&gt;, grand &lt;dbl&gt;, tradit &lt;dbl&gt;,
+## #   essenti &lt;dbl&gt;, speech &lt;dbl&gt;, design &lt;dbl&gt;, get &lt;dbl&gt;, polit &lt;dbl&gt;,
+## #   american &lt;dbl&gt;, charact &lt;dbl&gt;, media &lt;dbl&gt;, across &lt;dbl&gt;, wonder &lt;dbl&gt;,
+## #   part &lt;dbl&gt;, one &lt;dbl&gt;, repudi &lt;dbl&gt;, later &lt;dbl&gt;, date &lt;dbl&gt;, becom &lt;dbl&gt;,
+## #   full &lt;dbl&gt;, transcript &lt;dbl&gt;, servic &lt;dbl&gt;, near &lt;dbl&gt;, bottom &lt;dbl&gt;, ...</code></pre>
+<p>We obviously can see the first step is to take the log of these posteriors. The next step is to center the logged posterior for each word, transpose, center again for each rating, and finally transpose back to original wide format. The output makes clear each word is centered so that the ratings are mirror images of each other.</p>
+<pre class="r"><code>tidy_delta &lt;- poliblog_df %&gt;% 
+  # calculate empirical prior
+  add_tally(wt = n, name = &quot;total_cnt&quot;) %&gt;%
+  add_count(word, wt = n, name = &quot;word_cnt&quot;) %&gt;%
+  add_count(rating, wt = n, name = &quot;group_cnt&quot;) %&gt;%
+  mutate(posterior = word_cnt / total_cnt * group_cnt * 0.1) %&gt;% 
+  # calculate delta
+  mutate(delta = log(n + posterior)) %&gt;% 
+  group_by(word) %&gt;% 
+  mutate(delta = delta - mean(delta)) %&gt;%
+  group_by(rating) %&gt;% 
+  mutate(tidy_delta = delta - mean(delta)) %&gt;% 
+  ungroup() %&gt;% 
+  select(rating, word, n, posterior, tidy_delta)
+
+tidy_delta</code></pre>
+<pre><code>## # A tibble: 5,318 x 5
+##    rating       word        n posterior tidy_delta
+##    &lt;fct&gt;        &lt;chr&gt;   &lt;dbl&gt;     &lt;dbl&gt;      &lt;dbl&gt;
+##  1 Conservative 21st       16      4.45    -0.699 
+##  2 Conservative â           0     24.6     -1.56  
+##  3 Conservative a.m        23      5.00    -0.570 
+##  4 Conservative abandon    77      6.64     0.112 
+##  5 Conservative abc       165     15.3      0.0356
+##  6 Conservative abil      123     13.5     -0.117 
+##  7 Conservative abl       239     26.9     -0.134 
+##  8 Conservative abort     253     18.6      0.304 
+##  9 Conservative abroad     58      5.40     0.0348
+## 10 Conservative absolut   127     14.8     -0.162 
+## # ... with 5,308 more rows</code></pre>
+<p>Let’s join this to Monroe’s data and compare.</p>
+<pre class="r"><code>g.delta %&gt;% 
+  as_tibble(rownames = &quot;rating&quot;) %&gt;% 
+  gather(word, monroe_delta, -rating) %&gt;% 
+  left_join(tidy_delta, by = c(&quot;rating&quot;, &quot;word&quot;))</code></pre>
+<pre><code>## # A tibble: 5,318 x 6
+##    rating       word  monroe_delta     n posterior tidy_delta
+##    &lt;chr&gt;        &lt;chr&gt;        &lt;dbl&gt; &lt;dbl&gt;     &lt;dbl&gt;      &lt;dbl&gt;
+##  1 Conservative happi     -0.0191    102     10.0    -0.0191 
+##  2 Liberal      happi      0.0191     99     10.1     0.0191 
+##  3 Conservative think     -0.218    1381    173.     -0.218  
+##  4 Liberal      think      0.218    2077    173.      0.218  
+##  5 Conservative team       0.0591    350     31.8     0.0591 
+##  6 Liberal      team      -0.0591    286     31.8    -0.0591 
+##  7 Conservative barri      0.814      80      4.55    0.814  
+##  8 Liberal      barri     -0.814      11      4.55   -0.814  
+##  9 Conservative thank     -0.00656   269     26.1    -0.00656
+## 10 Liberal      thank      0.00656   254     26.2     0.00656
+## # ... with 5,308 more rows</code></pre>
+<p>I’d say the first 10 rows suggest it’s not even worth calculating error here because it’s pretty clear we nailed it. But getting the code correct isn’t the same as calculating the correct thing. This might be my lack of formal training with linear algebra here but centering the data across both dimensions doesn’t seem the same to me as calculating the log-odds, and I also worry about scaling to more than 2 groups. This part of his code is where I really wonder if it was ever meant to be used broadly or just an effective way to measure this particular dataset.</p>
+</div>
+</div>
+<div id="calculating-standard-error" class="section level2">
+<h2>Calculating Standard Error</h2>
+<p>I won’t bother showing how to calculate standard error for <code>tidylo</code> because the code is already included in the calculations for estimating the delta above. Instead I’ll join that data below to compare to Monroe’s version.</p>
+<p>Here’s Monroe’s code for calculating standard error.</p>
+<pre class="r"><code>g.adtm_w &lt;- -sweep(g.adtm,1,rowSums(g.adtm)) # terms not w spoken by k
+g.adtm_k &lt;- -sweep(g.adtm,2,colSums(g.adtm)) # w spoken by groups other than k
+g.adtm_kw &lt;- sum(g.adtm) - g.adtm_w - g.adtm_k - g.adtm # total terms not w or k 
+
+g.se &lt;- sqrt(1/g.adtm + 1/g.adtm_w + 1/g.adtm_k + 1/g.adtm_kw)
+
+as_tibble(g.se, rownames = &quot;rating&quot;)</code></pre>
+<pre><code>## # A tibble: 2 x 2,660
+##   rating      happi  think   team barri  thank clark    big  obama latest     go
+##   &lt;chr&gt;       &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt; &lt;dbl&gt;  &lt;dbl&gt; &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;
+## 1 Conservati~ 0.135 0.0330 0.0760 0.276 0.0834 0.145 0.0546 0.0167 0.0990 0.0307
+## 2 Liberal     0.135 0.0330 0.0760 0.276 0.0834 0.145 0.0546 0.0167 0.0990 0.0307
+## # ... with 2,649 more variables: mccain &lt;dbl&gt;, patriot &lt;dbl&gt;, instead &lt;dbl&gt;,
+## #   clip &lt;dbl&gt;, name &lt;dbl&gt;, clear &lt;dbl&gt;, enough &lt;dbl&gt;, target &lt;dbl&gt;,
+## #   today &lt;dbl&gt;, follow &lt;dbl&gt;, grand &lt;dbl&gt;, tradit &lt;dbl&gt;, essenti &lt;dbl&gt;,
+## #   speech &lt;dbl&gt;, design &lt;dbl&gt;, get &lt;dbl&gt;, polit &lt;dbl&gt;, american &lt;dbl&gt;,
+## #   charact &lt;dbl&gt;, media &lt;dbl&gt;, across &lt;dbl&gt;, wonder &lt;dbl&gt;, part &lt;dbl&gt;,
+## #   one &lt;dbl&gt;, repudi &lt;dbl&gt;, later &lt;dbl&gt;, date &lt;dbl&gt;, becom &lt;dbl&gt;, full &lt;dbl&gt;,
+## #   transcript &lt;dbl&gt;, servic &lt;dbl&gt;, near &lt;dbl&gt;, bottom &lt;dbl&gt;, ...</code></pre>
+<p>Once again let’s refactor into a tidy format.</p>
+<pre class="r"><code>tidy_se &lt;- poliblog_df %&gt;% 
+  # calculate empirical prior
+  add_count(word, wt = n, name = &quot;word_cnt&quot;) %&gt;%
+  add_tally(wt = n, name = &quot;total_cnt&quot;) %&gt;%
+  add_count(rating, wt = n, name = &quot;group_cnt&quot;) %&gt;%
+  mutate(posterior = word_cnt / total_cnt * group_cnt * .1) %&gt;% 
+  # calculate delta
+  mutate(delta = log(n + posterior)) %&gt;% 
+  group_by(word) %&gt;% 
+  mutate(delta = delta - mean(delta)) %&gt;%
+  group_by(rating) %&gt;% 
+  mutate(delta = delta - mean(delta)) %&gt;% 
+  ungroup() %&gt;% 
+  # calculate se
+  add_count(rating, wt = posterior, name = &quot;group_posterior&quot;) %&gt;%
+  add_count(word, wt = posterior, name = &quot;word_posterior&quot;) %&gt;%
+  add_count(wt = posterior, name = &quot;total_posterior&quot;) %&gt;%
+  mutate(g.adtm = n + posterior,
+         g.adtm_w = group_cnt + group_posterior - n - posterior,
+         g.adtm_k = word_cnt + word_posterior - n - posterior,
+         g.adtm_kw = total_cnt + total_posterior - g.adtm - g.adtm_w - g.adtm_k,
+         tidy_se = sqrt(1/g.adtm + 1/g.adtm_w + 1/g.adtm_k + 1/g.adtm_kw)) %&gt;% 
+  select(rating, word, tidy_se)
+
+tidy_se</code></pre>
+<pre><code>## # A tibble: 5,318 x 3
+##    rating       word    tidy_se
+##    &lt;fct&gt;        &lt;chr&gt;     &lt;dbl&gt;
+##  1 Conservative 21st     0.249 
+##  2 Conservative â        0.206 
+##  3 Conservative a.m      0.219 
+##  4 Conservative abandon  0.167 
+##  5 Conservative abc      0.109 
+##  6 Conservative abil     0.116 
+##  7 Conservative abl      0.0827
+##  8 Conservative abort    0.104 
+##  9 Conservative abroad   0.184 
+## 10 Conservative absolut  0.112 
+## # ... with 5,308 more rows</code></pre>
+<p>Now let’s join that code to Monroe’s code for comparison, and why not invite <code>tidylo</code> to the party as well.</p>
+<pre class="r"><code>combined_se &lt;- g.se %&gt;% 
+  as_tibble(rownames = &quot;rating&quot;) %&gt;% 
+  gather(word, monroe_se, -rating) %&gt;% 
+  left_join(tidy_se, by = c(&quot;rating&quot;, &quot;word&quot;)) %&gt;% 
+  left_join(transmute(results, rating, word, tidylo_se = sqrt(sigma2_wi)), 
+            by = c(&quot;rating&quot;, &quot;word&quot;))
+
+combined_se</code></pre>
+<pre><code>## # A tibble: 5,318 x 5
+##    rating       word  monroe_se tidy_se tidylo_se
+##    &lt;chr&gt;        &lt;chr&gt;     &lt;dbl&gt;   &lt;dbl&gt;     &lt;dbl&gt;
+##  1 Conservative happi    0.135   0.135     0.0704
+##  2 Liberal      happi    0.135   0.135     0.0707
+##  3 Conservative think    0.0330  0.0330    0.0174
+##  4 Liberal      think    0.0330  0.0330    0.0166
+##  5 Conservative team     0.0760  0.0760    0.0392
+##  6 Liberal      team     0.0760  0.0760    0.0401
+##  7 Conservative barri    0.276   0.276     0.0975
+##  8 Liberal      barri    0.276   0.276     0.116 
+##  9 Conservative thank    0.0834  0.0834    0.0436
+## 10 Liberal      thank    0.0834  0.0834    0.0439
+## # ... with 5,308 more rows</code></pre>
+<p>The tidy implementation of Monroe’s code is working, but also pretty apparent the <code>tidylo</code> implementation indicates more precision than Monroe’s. The calculation there is <code>sigma2_wi = 1/y_wi + 1/y_w</code>, which translates roughly to <code>sigma2_wi = 1/g.adtm + 1/(total_cnt + total_posterior)</code> in syntax from above. A quick glance back at the paper shows <code>tidylo</code> implemented equation 18 whereas Monroe went for something closer to equation 17.</p>
+</div>
+<div id="conclusion" class="section level2">
+<h2>Conclusion</h2>
+<p>We’ve now developed a tidy implementation for code found buried in Monroe’s teaching materials, for what that’s worth, and compared it to the already tidy implementation of <code>tidylo</code> developed by Julia Silge. We saw clear differences in selecting the prior, as we’d expect of any good Bayesian workflow, but also some differences in estimating the log-odds and quantifying the uncertainty of the estimate.</p>
+<p>In the next post I’ll try and create my own function that borrows from each of these and adds my own flair, while also making sure to pay proper homage to the original paper itself. Then we’ll run all three implementations through some tests to gauge if my version is any better than the originals.</p>
+</div>
