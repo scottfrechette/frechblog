@@ -1,0 +1,612 @@
+---
+title: "Revisiting Bayesian-Weighted Log Odds Part II"
+summary: 'Creating my own BWLO function'
+author: "Scott Frechette"
+date: '2022-04-11'
+subtitle: Part II
+slug: revisiting-bwlo-part-ii
+categories:
+- r
+- bayes
+tags:
+- r
+- bayes
+draft: yes
+---
+
+
+
+<p>In the <a href="2022/04/04/revisiting-bwlo-part-i/">last post</a> we explored different implementations of the weighted log-odds method outlined in <a href="(http://languagelog.ldc.upenn.edu/myl/Monroe.pdf)">Monroe, Colaresi, and Quinn (2008)</a>. In particular we explored Julia Silge’s <code>tidylo</code> package as well as Monroe’s (of Monroe, Colaresi, and Quinn) code from his teaching materials on <a href="https://burtmonroe.github.io/TextAsDataCourse/Tutorials/TADA-FightinWords.nb.html#">Github</a>.</p>
+<p>Now it’s time to take everything we learned and try to create my own personal function that tries to implement the best and most generalized version of the method they outlined. Once we have the function we’ll run it through some tests to compare to <code>tidylo</code> and Monroe’s code and see how it performs. Because this isn’t a supervised method we don’t really have good performance metrics so we’ll find some ways to eyeball it.</p>
+<div id="setup" class="section level2">
+<h2>Setup</h2>
+<p>Let’s load the packages we’ll need. To start we’ll be using the same <code>poliblog_df</code> data from last post and then source new data later.</p>
+<pre class="r"><code>library(tidyverse)
+library(tidylo)
+library(tidytext)</code></pre>
+</div>
+<div id="building-my-own-function" class="section level2">
+<h2>Building My Own Function</h2>
+<p>Time to take everything we learned and wrap it in a bow. As with many decisions like this I’m torn between designing a simple API and flexibility. Currently I’m sticking with ultimate flexibility but sensible and opinionated defaults. And yes, I chose to scramble the letters of the acronym slightly because I’m a child and found this funny.</p>
+<p>This is modeled very much on the format of <code>tidylo</code> but I did my best to match the original syntax as best I could. I did this mostly to compare my code to their formulas as I was developing my own version but hopefully it helps others as well.</p>
+<p>After comparing both methods I’ve essentially chosen Monroe for the prior and <code>tidylo</code> for estimation. I also took a page from <code>tidylo</code> and include an uninformative option for the prior, which I think could come in handy in smaller datasets where an empirical prior isn’t as likely to be valid.</p>
+<p>And here are a few more changes/tweaks based on what’s worked for me along the way:</p>
+<ol style="list-style-type: decimal">
+<li>Changed the standard error calculation to mirror that of the paper more closely. It performs more similarly to Monroe’s code than <code>tidylo</code> because I opted for equation 17 to avoid adding any additional assumptions when it didn’t affect latency at all.</li>
+<li>Included a parameter for whether to compare a group-feature combo to the entire dataset or all other groups. Every version I’ve come across implements a version of equation 15 but I wanted to include an option for equation 16, which also means it uses equation 19 for calculating standard error.</li>
+<li>Added ability to include topics as discussed briefly in the paper because I’ve actually found a use case for this in my day job</li>
+<li>Added option to make missing topic-group-feature combinations explicit to provide zeta even when count is 0</li>
+<li>Added some minor parameters for things like displaying odds or probability or sorting by zeta</li>
+</ol>
+<pre class="r"><code>add_blow &lt;- function (df,
+                      group,
+                      feature,
+                      n,
+                      topic = NULL,
+                      .prior = c(&quot;empirical&quot;, &quot;uninformative&quot;),
+                      .compare = c(&quot;dataset&quot;, &quot;groups&quot;),
+                      .k_prior = 0.1,
+                      .alpha_prior = 1,
+                      .complete = FALSE,
+                      .log_odds = FALSE,
+                      .se = FALSE,
+                      .odds = FALSE,
+                      .prob = FALSE,
+                      .sort = FALSE) {
+  
+  .compare &lt;- match.arg(.compare)
+  .prior &lt;- match.arg(.prior)
+  
+  grouping &lt;- dplyr::group_vars(df)
+  df &lt;- dplyr::ungroup(df)
+  
+  df$y_kwi &lt;- dplyr::pull(df, {{n}})
+  
+  if (.complete) {
+    
+    df &lt;- df %&gt;%
+      tidyr::complete({{group}}, {{feature}}, fill = list(y_kwi = 0)) %&gt;%
+      dplyr::mutate({{n}} := y_kwi)
+    
+  }
+  
+  df$.group &lt;- dplyr::pull(df, {{group}})
+  df$.feature &lt;- dplyr::pull(df, {{feature}})
+  df$.topic &lt;- &quot;none&quot;
+  
+  if (!missing(topic)) {df$.topic &lt;- dplyr::pull(df, {{topic}})}
+  
+  if (.prior == &quot;empirical&quot;) {
+    
+    df &lt;- df %&gt;%
+      dplyr::add_tally(wt = y_kwi, name = &quot;total_cnt&quot;) %&gt;%
+      dplyr::add_count(.feature, wt = y_kwi, name = &quot;feature_cnt&quot;) %&gt;%
+      dplyr::add_count(.topic, .group, wt = y_kwi, name = &quot;topic_group_cnt&quot;) %&gt;%
+      dplyr::add_count(.topic, .feature, wt = y_kwi, name = &quot;topic_feature_cnt&quot;) %&gt;%
+      dplyr::mutate(alpha_kwi = feature_cnt / total_cnt * topic_group_cnt * .k_prior,
+                    y_kwj = topic_feature_cnt - y_kwi) %&gt;%
+      dplyr::select(-total_cnt, -feature_cnt, -topic_feature_cnt, -topic_group_cnt)
+    
+  } else {
+    
+    if (!is.null(.alpha_prior)) {
+      # set a default prior for all features
+      .alpha &lt;- .alpha_prior
+      
+    } else {
+      # assume every feature has same frequency in dataset
+      .alpha &lt;- sum(df$y_kwi) / unique(df$.feature)
+      
+    }
+    
+    df &lt;- df %&gt;%
+      dplyr::add_count(.topic, .feature, wt = y_kwi, name = &quot;feature_cnt&quot;) %&gt;%
+      dplyr::mutate(alpha_kwi = .alpha,
+                    y_kwj = feature_cnt - y_kwi) %&gt;%
+      dplyr::select(-feature_cnt)
+    
+  } 
+  
+  if (.compare == &quot;dataset&quot;) {
+    
+    df &lt;- df %&gt;%
+      dplyr::add_count(.topic, .feature, wt = y_kwi, name = &quot;y_kw&quot;) %&gt;%
+      dplyr::add_count(.topic, .feature, wt = alpha_kwi, name = &quot;alpha_kw&quot;) %&gt;%
+      dplyr::add_count(.topic, .group, wt = y_kwi, name = &quot;n_ki&quot;) %&gt;%
+      dplyr::add_count(.topic, .group, wt = alpha_kwi, name = &quot;alpha_k0i&quot;) %&gt;%
+      dplyr::add_count(.topic, wt = y_kwi, name = &quot;n_k&quot;) %&gt;%
+      dplyr::add_count(.topic, wt = alpha_kwi, name = &quot;alpha_k0&quot;) %&gt;%
+      dplyr::mutate(omega_kwi = (y_kwi + alpha_kwi) / (n_ki + alpha_k0i - y_kwi - alpha_kwi),
+                    omega_kw = (y_kw + alpha_kw) / (n_k + alpha_k0 - y_kw - alpha_kw),
+                    delta_kwi = log(omega_kwi) - log(omega_kw),
+                    sigma_kwi = sqrt(1 / (y_kwi + alpha_kwi) + 
+                                       1 / (n_ki + alpha_k0i - y_kwi - alpha_kwi) + 
+                                       1 / (y_kw + alpha_kw) + 
+                                       1 / (n_k + alpha_k0- y_kw - alpha_kw)),
+                    zeta_kwi = delta_kwi / sigma_kwi) %&gt;%
+      dplyr::filter(y_kwi &gt; 0) %&gt;%
+      dplyr::rename(log_odds = delta_kwi,
+                    se = sigma_kwi,
+                    zeta = zeta_kwi) %&gt;%
+      dplyr::select(-.group, -.feature, -.topic,
+                    -y_kwi, -y_kwj, -y_kw, -n_ki, -n_k,
+                    -alpha_kwi, -alpha_kw, -alpha_k0i, -alpha_k0,
+                    -omega_kwi, -omega_kw) %&gt;%
+      dplyr::mutate(odds = exp(log_odds),
+                    prob = odds / (1 + odds))
+    
+  } else if (.compare == &quot;groups&quot;) {
+    
+    df &lt;- df %&gt;%
+      dplyr::add_count(.topic, .group, wt = y_kwi, name = &quot;n_ki&quot;) %&gt;%
+      dplyr::add_count(.topic, .group, wt = alpha_kwi, name = &quot;alpha_k0i&quot;) %&gt;%
+      dplyr::add_count(.topic, .group, wt = y_kwj, name = &quot;n_kj&quot;) %&gt;%
+      dplyr::mutate(omega_kwi = (y_kwi + alpha_kwi) / (n_ki + alpha_k0i - y_kwi - alpha_kwi),
+                    omega_kwj = (y_kwj + alpha_kwi) / (n_kj + alpha_k0i - y_kwj - alpha_kwi),
+                    delta_kwi = log(omega_kwi) - log(omega_kwj),
+                    sigma_kwi = sqrt(1 / (y_kwi + alpha_kwi) + 
+                                       1 / (n_ki + alpha_k0i - y_kwi - alpha_kwi) +
+                                       1 / (y_kwj + alpha_kwi) + 
+                                       1 / (n_kj + alpha_k0i - y_kwj - alpha_kwi)),
+                    zeta_kwi = delta_kwi / sigma_kwi) %&gt;%
+      dplyr::filter(y_kwi &gt; 0) %&gt;%
+      dplyr::rename(log_odds = delta_kwi,
+                    se = sigma_kwi,
+                    zeta = zeta_kwi) %&gt;%
+      dplyr::select(-.group, -.feature, -.topic,
+                    -y_kwi, -y_kwj, -y_kwj, -n_ki, -n_kj,
+                    -alpha_kwi, -alpha_k0i,
+                    -omega_kwi, -omega_kwj) %&gt;%
+      dplyr::mutate(odds = exp(log_odds),
+                    prob = odds / (1 + odds))
+    
+  } else {
+    
+    stop(&quot;Comparisons can only be different from dataset or comparison to other groups&quot;)
+    
+  }
+  
+  if (!.log_odds) {df$log_odds &lt;- NULL}
+  if (!.se) {df$se &lt;- NULL}
+  if (!.odds) {df$odds &lt;- NULL}
+  if (!.prob) {df$prob &lt;- NULL}
+  
+  if (.sort) {df &lt;- dplyr::arrange(df, -zeta)}
+  
+  if (length(grouping) &gt; 0) {df &lt;- dplyr::group_by(df, !!sym(grouping))}
+  
+  return(df)
+  
+}</code></pre>
+<p>While we’re at it we should go ahead and wrap Monroe’s code into a tidy function as well.</p>
+<pre class="r"><code>add_monroe &lt;- function(df, group, feature, n) {
+  
+  df$.group &lt;- dplyr::pull(df, {{group}})
+  df$.feature &lt;- dplyr::pull(df, {{feature}})
+  df$.n &lt;- dplyr::pull(df, {{n}})
+  
+  df %&gt;% 
+  # calculate empirical prior
+  add_count(.feature, wt = .n, name = &quot;feature_cnt&quot;) %&gt;%
+  add_tally(wt = .n, name = &quot;total_cnt&quot;) %&gt;%
+  add_count(.group, wt = n, name = &quot;group_cnt&quot;) %&gt;%
+  mutate(posterior = feature_cnt / total_cnt * group_cnt * .1) %&gt;% 
+  # calculate delta
+  mutate(delta = log(.n + posterior)) %&gt;% 
+  group_by(.feature) %&gt;% 
+  mutate(delta = delta - mean(delta)) %&gt;%
+  group_by(.group) %&gt;% 
+  mutate(delta = delta - mean(delta)) %&gt;% 
+  ungroup() %&gt;% 
+  # calculate se
+  add_count(.group, wt = posterior, name = &quot;group_posterior&quot;) %&gt;%
+  add_count(.feature, wt = posterior, name = &quot;feature_posterior&quot;) %&gt;%
+  add_count(wt = posterior, name = &quot;total_posterior&quot;) %&gt;%
+  mutate(g.adtm = .n + posterior,
+         g.adtm_w = group_cnt + group_posterior - .n - posterior,
+         g.adtm_k = feature_cnt + feature_posterior - .n - posterior,
+         g.adtm_k = pmax(0, g.adtm_k),
+         g.adtm_kw = total_cnt + total_posterior - g.adtm - g.adtm_w - g.adtm_k,
+         se = sqrt(1/g.adtm + 1/g.adtm_w + 1/g.adtm_k + 1/g.adtm_kw)) %&gt;% 
+  # calculate zeta
+  mutate(monroe = delta / se) %&gt;% 
+  select({{group}}, {{feature}}, {{n}}, monroe)
+}</code></pre>
+</div>
+<div id="trial-runs" class="section level2">
+<h2>Trial Runs</h2>
+<div id="monroes-data" class="section level4">
+<h4>Monroe’s Data</h4>
+<p>Let’s join all three of these and see how they compare with the same data we used in the last post.</p>
+<pre class="r"><code>poliblog_combined &lt;- poliblog_df %&gt;% 
+  add_monroe(rating, word, n) %&gt;% 
+  bind_log_odds(rating, word, n) %&gt;% 
+  add_blow(rating, word, n) %&gt;% 
+  rename(tidylo = log_odds_weighted,
+         frech = zeta)
+
+poliblog_combined</code></pre>
+<pre><code>## # A tibble: 5,305 x 6
+##    rating       word        n  monroe tidylo  frech
+##    &lt;fct&gt;        &lt;chr&gt;   &lt;dbl&gt;   &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;
+##  1 Conservative 21st       16 -2.81   -2.08  -3.59 
+##  2 Conservative a.m        23 -2.60   -1.85  -3.19 
+##  3 Conservative abandon    77  0.670   0.605  0.984
+##  4 Conservative abc       165  0.326   0.441  0.723
+##  5 Conservative abil      123 -1.00   -0.504 -0.840
+##  6 Conservative abl       239 -1.63   -0.861 -1.44 
+##  7 Conservative abort     253  2.91    2.26   3.60 
+##  8 Conservative abroad     58  0.189   0.259  0.424
+##  9 Conservative absolut   127 -1.45   -0.815 -1.37 
+## 10 Conservative absurd     52  0.0196  0.136  0.224
+## # ... with 5,295 more rows</code></pre>
+<p>We can pretty quickly see some discrepancies. What’s the general distribution like across the methods?</p>
+<pre class="r"><code>poliblog_combined %&gt;% 
+  gather(method, zeta, monroe:frech) %&gt;% 
+  ggplot(aes(zeta)) + 
+  geom_histogram(binwidth = 1, color = &#39;white&#39;) + 
+  geom_vline(xintercept = c(-1.96, 1.96), color = &#39;red&#39;, linetype = 2) +
+  scale_y_log10() +
+  facet_wrap(~method, ncol = 1)</code></pre>
+<p><img src="{{< blogdown/postref >}}index_files/figure-html/unnamed-chunk-5-1.png" width="100%" /></p>
+<p>Just like we suspected, <code>tidylo</code> has a greater amount of shrinkage due to the larger prior, and it will take a lot more data to reach extreme values or potentially even significance. How many words are considered positive or significant for each method?</p>
+<pre class="r"><code>poliblog_combined %&gt;% 
+  summarize(across(.cols = c(monroe, tidylo, frech), 
+                   .fns = list(pos = ~mean(. &gt; 0),
+                               sig = ~mean(abs(.) &gt;= 1.96))))</code></pre>
+<pre><code>## # A tibble: 1 x 6
+##   monroe_pos monroe_sig tidylo_pos tidylo_sig frech_pos frech_sig
+##        &lt;dbl&gt;      &lt;dbl&gt;      &lt;dbl&gt;      &lt;dbl&gt;     &lt;dbl&gt;     &lt;dbl&gt;
+## 1      0.501      0.188      0.501     0.0933     0.501     0.254</code></pre>
+<p>Wow the shrinkage for <code>tidylo</code> is just as intense as it looked in the histogram. Though it is curious that all three have exactly the same positivity rate. Let’s see how these compare across methods for each word.</p>
+<pre class="r"><code>poliblog_combined %&gt;% 
+  mutate(pos = if_all(c(monroe, tidylo, frech), ~ . &gt; 0),
+         neg = if_all(c(monroe, tidylo, frech), ~ . &lt; 0),
+         sig = if_all(c(monroe, tidylo, frech), ~ abs(.) &gt;= 1.96),
+         not_sig = if_all(c(monroe, tidylo, frech), ~ abs(.) &lt; 1.96)) %&gt;% 
+  summarize(same_sign = mean(pos + neg),
+            same_sig = mean(sig + not_sig))</code></pre>
+<pre><code>## # A tibble: 1 x 2
+##   same_sign same_sig
+##       &lt;dbl&gt;    &lt;dbl&gt;
+## 1     0.924    0.830</code></pre>
+<p>Despite all methods having 50.1% positive weighted log-odds they’re not always the same. I have a hunch most of the sign errors aren’t significant, so let’s see what the top 10 words for each rating across the three methods.</p>
+<pre class="r"><code>poliblog_combined %&gt;% 
+  gather(method, zeta, monroe:frech) %&gt;% 
+  group_by(rating, method) %&gt;% 
+  slice_max(zeta, n = 10) %&gt;% 
+  mutate(rank = min_rank(-zeta)) %&gt;% 
+  ungroup() %&gt;% 
+  unite(grp, rating, method) %&gt;% 
+  mutate(word = reorder_within(word, zeta, grp)) %&gt;% 
+  separate(grp, c(&quot;rating&quot;, &quot;method&quot;)) %&gt;% 
+  mutate(method = fct_relevel(method, &quot;monroe&quot;, &quot;tidylo&quot;)) %&gt;% 
+  ggplot(aes(zeta, word, fill = rating)) + 
+  geom_col(show.legend = FALSE) + 
+  scale_y_reordered() + 
+  facet_wrap(rating ~ method, scales = &quot;free_y&quot;) +
+  labs(y = NULL) + 
+  scale_x_continuous(expand = c(0, NA)) + 
+  theme(panel.background = element_rect(fill = NA),
+        panel.ontop = TRUE,
+        panel.grid.major.x = element_line(color = &#39;white&#39;))</code></pre>
+<p><img src="{{< blogdown/postref >}}index_files/figure-html/unnamed-chunk-8-1.png" width="100%" /></p>
+<p>Nearly identical, though again we can see the effects of the shrinkage from <code>tidylo</code>’s prior.</p>
+</div>
+<div id="julias-data" class="section level4">
+<h4>Julia’s Data</h4>
+<p>So far we’ve used Monroe’s dataset because we knew his code was designed for it and felt comfortable assuming <code>tidylo</code> was designed for broad uses including this, so it served as a useful benchmark. Now that we have three methods let’s try it on the data Julia used in her <a href="https://juliasilge.com/blog/introducing-tidylo/">blogpost</a> to introduce <code>tidylo</code>.</p>
+<pre class="r"><code>library(janeaustenr)
+
+tidy_bigrams &lt;- austen_books() %&gt;%
+    unnest_tokens(bigram, text, token = &quot;ngrams&quot;, n = 2) %&gt;%
+    filter(!is.na(bigram))
+
+bigram_counts &lt;- tidy_bigrams %&gt;%
+    count(book, bigram, sort = TRUE)</code></pre>
+<p>Let’s compare the 3 methods again, though this time I’m going to add an additional version of mine that doesn’t penalize the prior with Monroe’s 10% based on what I was seeing in the output.</p>
+<pre class="r"><code>jane_combined &lt;- bigram_counts %&gt;% 
+  add_monroe(book, bigram, n) %&gt;% 
+  bind_log_odds(book, bigram, n) %&gt;% 
+  add_blow(book, bigram, n) %&gt;% 
+  rename(tidylo = log_odds_weighted,
+         frech = zeta) %&gt;% 
+  add_blow(book, bigram, n, .k_prior = 1) %&gt;% 
+  rename(frech_full = zeta)
+
+jane_combined</code></pre>
+<pre><code>## # A tibble: 300,903 x 7
+##    book                bigram     n monroe tidylo  frech frech_full
+##    &lt;fct&gt;               &lt;chr&gt;  &lt;int&gt;  &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;      &lt;dbl&gt;
+##  1 Mansfield Park      of the   712  8.99  -2.98   2.59       1.22 
+##  2 Mansfield Park      to be    612  6.95  -3.73   0.607     -0.231
+##  3 Emma                to be    586  5.89  -3.77  -0.336     -0.812
+##  4 Mansfield Park      in the   533  7.10  -2.99   1.47       0.470
+##  5 Emma                of the   529  2.20  -5.39  -3.72      -3.31 
+##  6 Pride &amp; Prejudice   of the   439 -0.962 -1.21  -1.65      -1.17 
+##  7 Emma                it was   430  7.74  -1.83   2.32       1.27 
+##  8 Pride &amp; Prejudice   to be    422 -0.247 -0.987 -1.13      -0.786
+##  9 Sense &amp; Sensibility to be    418 -0.426 -0.637 -0.942     -0.596
+## 10 Emma                in the   416  2.13  -4.67  -3.12      -2.80 
+## # ... with 300,893 more rows</code></pre>
+<p>Let’s see the histograms on this data.</p>
+<pre class="r"><code>jane_combined %&gt;%  
+  gather(method, zeta, monroe:frech_full) %&gt;% 
+  ggplot(aes(zeta)) + 
+  geom_histogram(binwidth = 1, color = &#39;white&#39;) + 
+  geom_vline(xintercept = c(-1.96, 1.96), color = &#39;red&#39;, linetype = 2) +
+  scale_y_log10() + 
+  facet_wrap(~method, ncol = 1)</code></pre>
+<p><img src="{{< blogdown/postref >}}index_files/figure-html/unnamed-chunk-11-1.png" width="100%" /></p>
+<p>Well now it looks like <code>tidylo</code> has the more extreme values with a right-skewed tail.</p>
+<pre class="r"><code>jane_combined %&gt;% 
+  summarize(across(.cols = c(monroe, tidylo, frech, frech_full), 
+                   .fns = list(pos = ~mean(. &gt; 0, na.rm = T),
+                               sig = ~mean(abs(.) &gt;= 1.96, na.rm = T))))</code></pre>
+<pre><code>## # A tibble: 1 x 8
+##   monroe_pos monroe_sig tidylo_pos tidylo_sig frech_pos frech_sig frech_full_pos
+##        &lt;dbl&gt;      &lt;dbl&gt;      &lt;dbl&gt;      &lt;dbl&gt;     &lt;dbl&gt;     &lt;dbl&gt;          &lt;dbl&gt;
+## 1      0.280     0.0104      0.945     0.0714     0.890    0.0266          0.913
+## # ... with 1 more variable: frech_full_sig &lt;dbl&gt;</code></pre>
+<p>Wow that positive rate for Monroe looks really wrong based on the histogram until you realize it’s because there’s a lot of 0s.</p>
+<pre class="r"><code>mean(jane_combined$monroe == 0 / nrow(jane_combined))</code></pre>
+<pre><code>## [1] 0.3385842</code></pre>
+<p>Let’s again look at the top-10 words from each book according the different methods.</p>
+<pre class="r"><code>jane_combined %&gt;% 
+  gather(method, zeta, monroe:frech_full) %&gt;% 
+  group_by(book, method) %&gt;% 
+  slice_max(zeta, n = 10) %&gt;% 
+  ungroup() %&gt;% 
+  unite(grp, book, method, sep = &quot; - &quot;) %&gt;% 
+  mutate(bigram = reorder_within(bigram, zeta, grp)) %&gt;% 
+  separate(grp, c(&quot;book&quot;, &quot;method&quot;), sep = &quot; - &quot;) %&gt;% 
+  mutate(method = fct_relevel(method, &quot;monroe&quot;, &quot;tidylo&quot;)) %&gt;% 
+  ggplot(aes(zeta, bigram, fill = book)) + 
+  geom_col(show.legend = FALSE) + 
+  scale_y_reordered() + 
+  facet_wrap(book ~ method, scales = &quot;free_y&quot;, ncol = 4) + 
+  labs(y = NULL) +
+  scale_x_continuous(expand = c(0, NA)) + 
+  theme(panel.background = element_rect(fill = NA),
+        panel.ontop = TRUE,
+        panel.grid.major.x = element_line(color = &#39;white&#39;))</code></pre>
+<p><img src="{{< blogdown/postref >}}index_files/figure-html/unnamed-chunk-14-1.png" width="100%" /></p>
+<p>We can very clearly see Monroe’s method is definitely not designed for multiple groups and basically only produces stop words. My function and <code>tidylo</code> produce very similar top-10 lists, although we can see <code>tidylo</code> results in larger weighted log-odds.</p>
+<p>The only problem is I haven’t read a single page of a Jane Austen novel, so I have no idea how to really compare. So let’s find some titles I do know and take it for a spin.</p>
+</div>
+<div id="scotts-book-choices" class="section level4">
+<h4>Scott’s Book Choices</h4>
+<p>Let’s take four random titles I’ve read and compare them to see how the methods compare with text I’m more familiar with.</p>
+<pre class="r"><code>library(gutenbergr)
+
+titles &lt;- gutenberg_download(c(30,   # Bible
+                              215,   # Call of the wild
+                              11,    # Alice in Wonderland
+                              1661), # Sherlock
+                            meta_fields = c(&quot;title&quot;, &quot;author&quot;))</code></pre>
+<p>To keep the comparison as similar to Julia’s as I can we’ll also go with bigrams with minimal processing before passing to the various methods.</p>
+<pre class="r"><code>title_bigrams &lt;- titles %&gt;% 
+  unnest_tokens(bigram, text, token = &quot;ngrams&quot;, n = 2) %&gt;%
+  mutate(bigram = str_remove_all(bigram, &quot;[:punct:]&quot;)) %&gt;% 
+  filter(!is.na(bigram) | bigram != &quot;&quot;) %&gt;% 
+  count(title, author, bigram)
+
+titles_combined &lt;- title_bigrams %&gt;% 
+  add_monroe(title, bigram, n) %&gt;% 
+  bind_log_odds(title, bigram, n) %&gt;% 
+  add_blow(title, bigram, n) %&gt;% 
+  rename(tidylo = log_odds_weighted,
+         frech = zeta) %&gt;% 
+  add_blow(title, bigram, n, .k_prior = 1) %&gt;% 
+  rename(frech_full = zeta)
+
+titles_combined</code></pre>
+<pre><code>## # A tibble: 231,233 x 7
+##    title                          bigram     n    monroe tidylo frech frech_full
+##    &lt;chr&gt;                          &lt;chr&gt;  &lt;int&gt;     &lt;dbl&gt;  &lt;dbl&gt; &lt;dbl&gt;      &lt;dbl&gt;
+##  1 Alice&#39;s Adventures in Wonderl~ a baby     2  4.60e- 1   3.05  3.64       4.03
+##  2 Alice&#39;s Adventures in Wonderl~ a back     1  1.58e- 1   2.25  2.48       2.80
+##  3 Alice&#39;s Adventures in Wonderl~ a bad      1 -3.85e- 2   1.89  1.88       1.87
+##  4 Alice&#39;s Adventures in Wonderl~ a bar~     2  2.08e-10   3.23  3.73       4.09
+##  5 Alice&#39;s Adventures in Wonderl~ a bat      2  2.08e-10   3.23  3.73       4.09
+##  6 Alice&#39;s Adventures in Wonderl~ a bird     1 -9.23e- 1   3.33  1.01       1.17
+##  7 Alice&#39;s Adventures in Wonderl~ a bit      8  1.04e+ 0   6.02  7.34       8.10
+##  8 Alice&#39;s Adventures in Wonderl~ a blow     1 -1.04e- 1   2.46  2.28       2.62
+##  9 Alice&#39;s Adventures in Wonderl~ a body     1 -1.49e- 1   2.46  2.24       2.27
+## 10 Alice&#39;s Adventures in Wonderl~ a bone     1 -3.29e- 1   2.65  2.05       2.08
+## # ... with 231,223 more rows</code></pre>
+<p>Let’s see the histograms on this data.</p>
+<pre class="r"><code>titles_combined %&gt;%  
+  gather(method, zeta, -title, -bigram, -n) %&gt;% 
+  ggplot(aes(zeta)) + 
+  geom_histogram(binwidth = 1, color = &#39;white&#39;) + 
+  geom_vline(xintercept = c(-1.96, 1.96), color = &#39;red&#39;, linetype = 2) +
+  scale_y_log10() + 
+  facet_wrap(~method, ncol = 1) +
+  theme_light()</code></pre>
+<p><img src="{{< blogdown/postref >}}index_files/figure-html/unnamed-chunk-17-1.png" width="100%" /></p>
+<p>Monroe’s function now has a right-skew and <code>tidylo</code> has the greatest variance.</p>
+<pre class="r"><code>titles_combined %&gt;% 
+  summarize(across(.cols = c(monroe, tidylo, frech, frech_full), 
+                   .fns = list(pos = ~mean(. &gt; 0, na.rm = T),
+                               sig = ~mean(abs(.) &gt;= 1.96, na.rm = T))))</code></pre>
+<pre><code>## # A tibble: 1 x 8
+##   monroe_pos monroe_sig tidylo_pos tidylo_sig frech_pos frech_sig frech_full_pos
+##        &lt;dbl&gt;      &lt;dbl&gt;      &lt;dbl&gt;      &lt;dbl&gt;     &lt;dbl&gt;     &lt;dbl&gt;          &lt;dbl&gt;
+## 1      0.192     0.0189      0.948      0.210     0.937     0.152          0.943
+## # ... with 1 more variable: frech_full_sig &lt;dbl&gt;</code></pre>
+<p>Again with high rate of Monroe values being 0.</p>
+<pre class="r"><code>mean(titles_combined$monroe == 0 / nrow(titles_combined))</code></pre>
+<pre><code>## [1] 0.2145239</code></pre>
+<p>Let’s again look at the top-10 bigrams from each title according the various methods.</p>
+<pre class="r"><code>titles_combined %&gt;% 
+  gather(method, zeta, -title, -bigram, -n) %&gt;% 
+  group_by(title, method) %&gt;% 
+  slice_max(zeta, n = 10) %&gt;% 
+  ungroup() %&gt;% 
+  unite(grp, title, method, sep = &quot; - &quot;) %&gt;% 
+  mutate(bigram = reorder_within(bigram, zeta, grp)) %&gt;% 
+  separate(grp, c(&quot;title&quot;, &quot;method&quot;), sep = &quot; - &quot;) %&gt;% 
+  mutate(method = fct_relevel(method, &quot;monroe&quot;, &quot;tidylo&quot;)) %&gt;% 
+  ggplot(aes(zeta, bigram, fill = title)) + 
+  geom_col(show.legend = FALSE) + 
+  scale_y_reordered() + 
+  facet_wrap(title ~ method, scales = &quot;free_y&quot;, ncol = 4,
+             labeller = labeller(title = label_wrap_gen(25))) + 
+  labs(y = NULL) +
+  scale_x_continuous(expand = c(0, NA)) + 
+  theme(panel.background = element_rect(fill = NA),
+        panel.ontop = TRUE,
+        panel.grid.major.x = element_line(color = &#39;white&#39;))</code></pre>
+<p><img src="{{< blogdown/postref >}}index_files/figure-html/unnamed-chunk-20-1.png" width="100%" /></p>
+<p>Way more stop words than we saw with Jane Austen novels that makes it hard to really identify best method because no method is consistently good on all titles, though it’s clear that Monroe is out.</p>
+<p>Research suggests you can identify authors by stop word usage because it’s the connector words that act as the glue in a story. Here’s an example of <a href="https://ieeexplore.ieee.org/abstract/document/5298613">a paper</a> using stop words to classify authors.</p>
+<p>So what if we didn’t have this issue with Jane Austen novels because her stop words all cancelled out? Let’s take another look at top bigrams within the novels to see if perhaps Julia just filtered them out.</p>
+<pre class="r"><code>bigram_counts</code></pre>
+<pre><code>## # A tibble: 300,903 x 3
+##    book                bigram     n
+##    &lt;fct&gt;               &lt;chr&gt;  &lt;int&gt;
+##  1 Mansfield Park      of the   712
+##  2 Mansfield Park      to be    612
+##  3 Emma                to be    586
+##  4 Mansfield Park      in the   533
+##  5 Emma                of the   529
+##  6 Pride &amp; Prejudice   of the   439
+##  7 Emma                it was   430
+##  8 Pride &amp; Prejudice   to be    422
+##  9 Sense &amp; Sensibility to be    418
+## 10 Emma                in the   416
+## # ... with 300,893 more rows</code></pre>
+<p>Nope we can see them there. What about the different weighted log-odd scores? We see “to be” represented in 4 of the top 10 spots so let’s check that one.</p>
+<pre class="r"><code>jane_combined %&gt;% 
+  filter(bigram == &quot;to be&quot;)</code></pre>
+<pre><code>## # A tibble: 6 x 7
+##   book                bigram     n monroe tidylo  frech frech_full
+##   &lt;fct&gt;               &lt;chr&gt;  &lt;int&gt;  &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;      &lt;dbl&gt;
+## 1 Mansfield Park      to be    612  6.95  -3.73   0.607     -0.231
+## 2 Emma                to be    586  5.89  -3.77  -0.336     -0.812
+## 3 Pride &amp; Prejudice   to be    422 -0.247 -0.987 -1.13      -0.786
+## 4 Sense &amp; Sensibility to be    418 -0.426 -0.637 -0.942     -0.596
+## 5 Persuasion          to be    362 -1.87   5.27   2.86       2.95 
+## 6 Northanger Abbey    to be    270 -6.02   5.10  -0.776      0.337</code></pre>
+<p>We see some significance in Persuasion in particular, but generally not significant results. Let’s compare that to what we saw above with titles I chose.</p>
+<pre class="r"><code>titles_combined %&gt;% 
+  filter(bigram == &quot;to be&quot;)</code></pre>
+<pre><code>## # A tibble: 4 x 7
+##   title                             bigram     n monroe tidylo  frech frech_full
+##   &lt;chr&gt;                             &lt;chr&gt;  &lt;int&gt;  &lt;dbl&gt;  &lt;dbl&gt;  &lt;dbl&gt;      &lt;dbl&gt;
+## 1 Alice&#39;s Adventures in Wonderland  to be     51  -4.04  19.8   6.32        7.57
+## 2 The Adventures of Sherlock Holmes to be    189   7.30   7.92 10.4        11.3 
+## 3 The Bible, King James Version, C~ to be    552  22.2  -19.1  -4.01       -4.01
+## 4 The Call of the Wild              to be     27  -6.38  18.0   0.603       2.84</code></pre>
+<p>Some very extreme values here. Definitely think that could be a hurdle here we should just skate right around. Let’s follow Julia’s example and pick works from a single author this time. Who better than the greatest author of all time?</p>
+</div>
+<div id="the-bard" class="section level4">
+<h4>The Bard</h4>
+<p>Going to choose five of the titles I remember liking when I took a class in college.</p>
+<pre class="r"><code>shakespeare &lt;- gutenberg_download(c(1106,  # titus andronicus
+                                    1113,  # midsummer night&#39;s dream
+                                    1129,  # macbeth
+                                    1135,  # tempest
+                                    1524), # hamlet
+                                  meta_fields = c(&quot;title&quot;, &quot;author&quot;))
+
+shakespeare_bigrams &lt;- shakespeare %&gt;% 
+  unnest_tokens(bigram, text, token = &quot;ngrams&quot;, n = 2) %&gt;%
+  mutate(bigram = str_remove_all(bigram, &quot;[:punct:]&quot;)) %&gt;% 
+  filter(!is.na(bigram) | bigram != &quot;&quot;) %&gt;% 
+  count(title, bigram)</code></pre>
+<p>Let’s try this again, except this time we’ll add yet another two options for the comparison against all other groups, both with and without the 10% prior penalty. Group comparisons don’t see perfect for this scenario but might as well check them out.</p>
+<pre class="r"><code>shakespeare_combined &lt;- shakespeare_bigrams %&gt;% 
+  add_monroe(title, bigram, n) %&gt;% 
+  bind_log_odds(title, bigram, n) %&gt;% 
+  add_blow(title, bigram, n) %&gt;% 
+  rename(tidylo = log_odds_weighted,
+         frech = zeta) %&gt;% 
+  add_blow(title, bigram, n, .k_prior = 1) %&gt;% 
+  rename(frech_full = zeta)
+
+shakespeare_combined</code></pre>
+<pre><code>## # A tibble: 71,151 x 7
+##    title                     bigram             n monroe tidylo frech frech_full
+##    &lt;chr&gt;                     &lt;chr&gt;          &lt;int&gt;  &lt;dbl&gt;  &lt;dbl&gt; &lt;dbl&gt;      &lt;dbl&gt;
+##  1 A Midsummer Night&#39;s Dream &quot; complete&quot;        1 0.0100  0.651 0.377      0.469
+##  2 A Midsummer Night&#39;s Dream &quot;1 are&quot;            9 0.0300  1.95  1.13       1.41 
+##  3 A Midsummer Night&#39;s Dream &quot;1 license&quot;        1 0.0100  0.651 0.377      0.469
+##  4 A Midsummer Night&#39;s Dream &quot;1 the&quot;            1 0.0100  0.651 0.377      0.469
+##  5 A Midsummer Night&#39;s Dream &quot;10 of&quot;            1 0.0100  0.651 0.377      0.469
+##  6 A Midsummer Night&#39;s Dream &quot;10000 x&quot;          1 0.0100  0.651 0.377      0.469
+##  7 A Midsummer Night&#39;s Dream &quot;100000000 tr~     1 0.0100  0.651 0.377      0.469
+##  8 A Midsummer Night&#39;s Dream &quot;1113 txt&quot;         1 0       1.71  1.28       1.39 
+##  9 A Midsummer Night&#39;s Dream &quot;1113 zip&quot;         1 0       1.71  1.28       1.39 
+## 10 A Midsummer Night&#39;s Dream &quot;1514 at&quot;          1 0       1.71  1.28       1.39 
+## # ... with 71,141 more rows</code></pre>
+<p>We’ll skip the diagnostics and go straight to reviewing the top-10 bigrams from each title according the various methods.</p>
+<pre class="r"><code>shakespeare_combined %&gt;% 
+  gather(method, zeta, -title, -bigram, -n) %&gt;% 
+  group_by(title, method) %&gt;% 
+  slice_max(zeta, n = 10) %&gt;% 
+  ungroup() %&gt;% 
+  unite(grp, title, method, sep = &quot; - &quot;) %&gt;% 
+  mutate(bigram = reorder_within(bigram, zeta, grp)) %&gt;% 
+  separate(grp, c(&quot;title&quot;, &quot;method&quot;), sep = &quot; - &quot;) %&gt;% 
+  mutate(method = fct_relevel(method, &quot;monroe&quot;, &quot;tidylo&quot;)) %&gt;% 
+  ggplot(aes(zeta, bigram, fill = title)) + 
+  geom_col(show.legend = FALSE) + 
+  scale_y_reordered() + 
+  facet_wrap(title ~ method, scales = &quot;free_y&quot;, ncol = 4,
+             labeller = labeller(title = label_wrap_gen(25))) + 
+  labs(y = NULL) +
+  scale_x_continuous(expand = c(0, NA)) + 
+  theme(panel.background = element_rect(fill = NA),
+        panel.ontop = TRUE,
+        panel.grid.major.x = element_line(color = &#39;white&#39;))</code></pre>
+<p><img src="{{< blogdown/postref >}}index_files/figure-html/unnamed-chunk-26-1.png" width="100%" /></p>
+<p>That’s much more like it.</p>
+</div>
+<div id="tidylo-test-revisited" class="section level4">
+<h4><code>Tidylo</code> Test Revisited</h4>
+<p>In the last post I simulated data that showed a potential weakness in the <code>tidylo</code> prior when dealing with imbalanced data. Before we go it’s worth checking out whether my function has the same issue.</p>
+<pre class="r"><code>set.seed(11)
+tidylo_test &lt;- tibble(group = c(rep(&quot;group 1&quot;, 10), rep(&quot;group 2&quot;, 15)),
+                      word = sample(letters, 25),
+                      n = c(rpois(10, 10), rpois(15, 20))) %&gt;% 
+  add_row(group = &quot;group 1&quot;, word = &quot;test&quot;, n = 5) %&gt;% 
+  add_row(group = &quot;group 2&quot;, word = &quot;test&quot;, n = 25) %&gt;% 
+  group_by(group) %&gt;% 
+  mutate(pct = n / sum(n)) %&gt;% 
+  ungroup() 
+
+tidylo_test %&gt;% 
+  bind_log_odds(group, word, n) %&gt;% 
+  add_blow(group, word, n) %&gt;% 
+  filter(word == &quot;test&quot;)</code></pre>
+<pre><code>## # A tibble: 2 x 6
+##   group   word      n    pct log_odds_weighted   zeta
+##   &lt;chr&gt;   &lt;chr&gt; &lt;dbl&gt;  &lt;dbl&gt;             &lt;dbl&gt;  &lt;dbl&gt;
+## 1 group 1 test      5 0.0521              2.08 -0.757
+## 2 group 2 test     25 0.0868             -1.14  0.346</code></pre>
+<p>Obviously I chose a situation where my function performed in a situation <code>tidylo</code> didn’t, but it is reflective of real situations I’ve seen in the wild and something to consider.</p>
+</div>
+</div>
+<div id="final-thoughts" class="section level2">
+<h2>Final Thoughts</h2>
+<p>After all this I think <code>tidylo</code> is extremely useful, well designed, and gets bonus points for already being on CRAN. I do think there’s a strong argument to be made for Monroe’s prior, with or without the penalty. It’s clear the debate really comes down to identifying <code>alpha0</code>, and I think there’s no single right answer for all situations.</p>
+<p>Although I created a very flexible function I don’t see myself choosing uninformative prior or comparing against all other groups very often. After more practice I might remove them entirely. I do like the extra options I added like odds, probability, and sorting.</p>
+<p>Another point I didn’t include in detail and leave it up to reader to explore further is <code>tidylo</code>’s larger prior tends to create a much more precise measurement, meaning the standard error is much smaller. This is why we often see higher weighted log-odd values even though the point estimates aren’t that different. In other words the larger prior shrinks the log-odds calculation and minimizes standard error, so it’s not always clear whether it’s over- or under-estimating the weighted log-odds compared to my version.</p>
+<pre class="r"><code># bigram_counts %&gt;% 
+#   add_count(bigram, wt = n, name = &quot;alpha&quot;) %&gt;% 
+#   mutate(y_wi = n + alpha) %&gt;% 
+#   add_count(bigram, wt = y_wi, name = &#39;y_w&#39;) %&gt;% 
+#   add_count(book, wt = y_wi, name = &quot;n_i&quot;) %&gt;% 
+#   mutate(omega_wi = y_wi/(n_i - y_wi), 
+#          omega_w = y_w/(sum(y_wi) - y_w), 
+#          delta_wi = log(omega_wi) - log(omega_w), 
+#          sigma_wi = sqrt(1/y_wi + 1/y_w), 
+#          zeta_wi = delta_wi/sigma_wi) %&gt;% 
+#   rename(low = zeta_wi,
+#          lo = delta_wi) %&gt;% 
+#   select(-y_wi, -y_w, -n_i, -omega_wi, -omega_w, -alpha) %&gt;% 
+#   add_blow(book, bigram, n, .log_odds = T, .se = T) %&gt;% 
+#   filter(bigram == &quot;to be&quot;)</code></pre>
+</div>
