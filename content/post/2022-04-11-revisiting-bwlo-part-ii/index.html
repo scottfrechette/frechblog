@@ -11,7 +11,6 @@ categories:
 tags:
 - r
 - bayes
-draft: yes
 ---
 
 
@@ -489,7 +488,7 @@ titles_combined</code></pre>
 ## 4 Sense &amp; Sensibility to be    418 -0.426 -0.637 -0.942     -0.596
 ## 5 Persuasion          to be    362 -1.87   5.27   2.86       2.95 
 ## 6 Northanger Abbey    to be    270 -6.02   5.10  -0.776      0.337</code></pre>
-<p>We see some significance in Persuasion in particular, but generally not significant results. Let’s compare that to what we saw above with titles I chose.</p>
+<p>We see some significance in <em>Persuasion</em> in particular, but generally not significant results. Let’s compare that to what we saw above with titles I chose.</p>
 <pre class="r"><code>titles_combined %&gt;% 
   filter(bigram == &quot;to be&quot;)</code></pre>
 <pre><code>## # A tibble: 4 x 7
@@ -515,9 +514,9 @@ shakespeare_bigrams &lt;- shakespeare %&gt;%
   unnest_tokens(bigram, text, token = &quot;ngrams&quot;, n = 2) %&gt;%
   mutate(bigram = str_remove_all(bigram, &quot;[:punct:]&quot;)) %&gt;% 
   filter(!is.na(bigram) | bigram != &quot;&quot;) %&gt;% 
-  count(title, bigram)</code></pre>
-<p>Let’s try this again, except this time we’ll add yet another two options for the comparison against all other groups, both with and without the 10% prior penalty. Group comparisons don’t see perfect for this scenario but might as well check them out.</p>
-<pre class="r"><code>shakespeare_combined &lt;- shakespeare_bigrams %&gt;% 
+  count(title, bigram)
+
+shakespeare_combined &lt;- shakespeare_bigrams %&gt;% 
   add_monroe(title, bigram, n) %&gt;% 
   bind_log_odds(title, bigram, n) %&gt;% 
   add_blow(title, bigram, n) %&gt;% 
@@ -561,7 +560,7 @@ shakespeare_combined</code></pre>
   theme(panel.background = element_rect(fill = NA),
         panel.ontop = TRUE,
         panel.grid.major.x = element_line(color = &#39;white&#39;))</code></pre>
-<p><img src="{{< blogdown/postref >}}index_files/figure-html/unnamed-chunk-26-1.png" width="100%" /></p>
+<p><img src="{{< blogdown/postref >}}index_files/figure-html/unnamed-chunk-25-1.png" width="100%" /></p>
 <p>That’s much more like it.</p>
 </div>
 <div id="tidylo-test-revisited" class="section level4">
@@ -594,19 +593,4 @@ tidylo_test %&gt;%
 <p>After all this I think <code>tidylo</code> is extremely useful, well designed, and gets bonus points for already being on CRAN. I do think there’s a strong argument to be made for Monroe’s prior, with or without the penalty. It’s clear the debate really comes down to identifying <code>alpha0</code>, and I think there’s no single right answer for all situations.</p>
 <p>Although I created a very flexible function I don’t see myself choosing uninformative prior or comparing against all other groups very often. After more practice I might remove them entirely. I do like the extra options I added like odds, probability, and sorting.</p>
 <p>Another point I didn’t include in detail and leave it up to reader to explore further is <code>tidylo</code>’s larger prior tends to create a much more precise measurement, meaning the standard error is much smaller. This is why we often see higher weighted log-odd values even though the point estimates aren’t that different. In other words the larger prior shrinks the log-odds calculation and minimizes standard error, so it’s not always clear whether it’s over- or under-estimating the weighted log-odds compared to my version.</p>
-<pre class="r"><code># bigram_counts %&gt;% 
-#   add_count(bigram, wt = n, name = &quot;alpha&quot;) %&gt;% 
-#   mutate(y_wi = n + alpha) %&gt;% 
-#   add_count(bigram, wt = y_wi, name = &#39;y_w&#39;) %&gt;% 
-#   add_count(book, wt = y_wi, name = &quot;n_i&quot;) %&gt;% 
-#   mutate(omega_wi = y_wi/(n_i - y_wi), 
-#          omega_w = y_w/(sum(y_wi) - y_w), 
-#          delta_wi = log(omega_wi) - log(omega_w), 
-#          sigma_wi = sqrt(1/y_wi + 1/y_w), 
-#          zeta_wi = delta_wi/sigma_wi) %&gt;% 
-#   rename(low = zeta_wi,
-#          lo = delta_wi) %&gt;% 
-#   select(-y_wi, -y_w, -n_i, -omega_wi, -omega_w, -alpha) %&gt;% 
-#   add_blow(book, bigram, n, .log_odds = T, .se = T) %&gt;% 
-#   filter(bigram == &quot;to be&quot;)</code></pre>
 </div>
